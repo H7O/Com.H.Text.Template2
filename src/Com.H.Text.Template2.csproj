@@ -1,0 +1,70 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Com.H.Text.Template2</AssemblyName>
+    <RootNamespace>Com.H.Text.Template2</RootNamespace>
+    <!-- 10.x aligns with the rest of the Com.H family (Com.H 10.2.0, Com.H.Data.Common 10.1.x,
+         Com.H.EF.Relational 10.0.x), where the major version tracks the .NET generation rather
+         than this package's own lifecycle. -->
+    <Version>10.0.0</Version>
+    <Authors>Hussein Al Bayati</Authors>
+    <Description>Connects the Com.H templating engine to any ADO.NET database via Com.H.Data.Common. Queries embedded in templates are executed with real SQL parameters rather than textual substitution.</Description>
+    <Copyright>Hussein Al Bayati</Copyright>
+    <PackageProjectUrl>https://github.com/H7O/Com.H.Text.Template2</PackageProjectUrl>
+    <PackageIcon>128x128.jpg</PackageIcon>
+    <PackageReadmeFile>nuget.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/H7O/Com.H.Text.Template2</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>templating, ADO.Net, dynamic query results, sql parameters</PackageTags>
+    <PackageReleaseNotes>Initial release</PackageReleaseNotes>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- Deterministic builds for reproducibility -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- Source Link - enables stepping into source code when debugging -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!-- Embed debug symbols in the assembly (avoids separate .snupkg) -->
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <!-- The parameter-model mapping is an implementation detail, but it is the part most worth
+       unit-testing directly, so the test assembly gets access rather than the API being widened. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Com.H.Text.Template2.Tests" />
+  </ItemGroup>
+
+  <!-- Source Link for GitHub -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
+  </ItemGroup>
+
+  <!-- This package exists to join these two. Version floors match the releases that
+       introduced the APIs relied on here: Com.H 10.2.0 is the first with netstandard2.0
+       feature parity, Com.H.Data.Common 10.1.0.9 the current maintenance release. -->
+  <ItemGroup>
+    <PackageReference Include="Com.H" Version="[10.2.0, 11.0.0)" />
+    <PackageReference Include="Com.H.Data.Common" Version="[10.1.0.9, 11.0.0)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\128x128.jpg" Condition="Exists('..\128x128.jpg')">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include=".\nuget.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Com.H.Text.Template2.Tests</RootNamespace>
+    <AssemblyName>Com.H.Text.Template2.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <!-- Force the patched SourceGear-based native SQLite build. Microsoft.Data.Sqlite still floors
+         the SQLitePCLRaw bundle at 2.1.11, which pulls the deprecated + vulnerable
+         SQLitePCLRaw.lib.e_sqlite3 (CVE-2025-6965 / GHSA-2m69-gcr7-jv3q). Bundle 3.x drops
+         lib.e_sqlite3 in favour of SourceGear.sqlite3 (SQLite 3.50.4, past the fix line). A direct
+         (top-level) reference overrides the transitive resolution. Same approach as DBToRestAPI. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\Com.H.Text.Template2.csproj" />
+  </ItemGroup>
+
+</Project>
