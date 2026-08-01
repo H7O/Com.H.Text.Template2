@@ -48,11 +48,9 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
   </ItemGroup>
 
-  <!-- This package exists to join these two. Version floors match the releases that
-       introduced the APIs relied on here: Com.H 10.2.0 is the first with netstandard2.0
-       feature parity, Com.H.Data.Common 10.1.0.9 the current maintenance release. -->
+  <!-- The engine is native to this package; Com.H.Data.Common supplies the parameterised
+       database access (and, transitively, System.Text.Json on netstandard2.0). -->
   <ItemGroup>
-    <PackageReference Include="Com.H" Version="[10.2.0, 11.0.0)" />
     <PackageReference Include="Com.H.Data.Common" Version="[10.1.0.9, 11.0.0)" />
   </ItemGroup>
 

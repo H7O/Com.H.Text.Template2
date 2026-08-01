@@ -175,17 +175,35 @@ public class TemplateRenderingTests : IDisposable
     [Fact]
     public void RenderContent_PreRenderRequested_AllowedWhenExplicitlyOptedIn()
     {
+        // Opting in makes the marker a TEXTUAL substitution into the SQL — which is why it is
+        // off by default. The template must therefore quote the value itself, exactly as it
+        // would when interpolating an identifier (the legitimate use).
         var template =
             "<h-embedded-data pre-render=\"true\"><![CDATA["
-            + "select name from users where country = {{country}}"
+            + "select name from users where country = '{{country}}'"
             + "]]></h-embedded-data><li>{{name}}</li>";
 
-        // Opting in must not throw; the provider still parameterises the value.
         var result = template.RenderContent(
             _connection, new { country = "JO" }, allowPreRender: true);
 
         Assert.NotNull(result);
         Assert.Contains("Ali", result);
+    }
+
+    [Fact]
+    public void RenderContent_PreRender_ActuallySubstitutesIntoTheQuery()
+    {
+        // the documented escape hatch: interpolating an identifier, which cannot be a parameter
+        var template =
+            "<h-embedded-data pre-render=\"true\"><![CDATA["
+            + "select name from {{table}} order by name"
+            + "]]></h-embedded-data><li>{{name}}</li>";
+
+        var result = template.RenderContent(
+            _connection, new { table = "users" }, allowPreRender: true);
+
+        Assert.Contains("Ali", result);
+        Assert.Contains("Sara", result);
     }
 
     // ---------------------------------------------------------------------

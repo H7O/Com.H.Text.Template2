@@ -118,9 +118,16 @@ Capabilities they exercise, which a successor must cover:
 
 - Nested templates by URI (`<h-embedded-template>`), resolved relative to the parent (`{uri{.}}`).
 - Row iteration — body repeated per result row.
-- Multiple independent data blocks in one document.
+- **One** data block per file — verified 2026-08-01: if a file contains more than one
+  `<h-embedded-data>`, only the first executes; the rest are stripped and their markup is filled
+  from the first query's rows. Composing several queries into one document therefore requires one
+  nested template per query. A successor should decide deliberately whether to keep that
+  restriction or support multiple blocks properly.
 - Custom markers per block, because `{{ }}` collides with CSS and JSON in HTML output.
   Note markers may be **asymmetric** — `open-marker="{v1{"` with the close left at `}}`.
+  Markers are currently interpolated into a regex **without escaping**, so `open-marker="[["`
+  silently fails to substitute and `<` throws an `XmlException` (the tag is parsed as XML).
+  A successor should escape them, or pick a syntax that cannot collide.
 - Date placeholders (`{now{yyyy-MM-dd}}`, `tomorrow`, `yesterday`).
 - Output formats beyond HTML: CSV, PSV, XML, plain text.
 

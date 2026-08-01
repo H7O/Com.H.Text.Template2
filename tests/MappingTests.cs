@@ -1,19 +1,19 @@
 using System.Text.RegularExpressions;
-using Com.H.Data;
+
 using Com.H.Text.Template2;
 
 namespace Com.H.Text.Template2.Tests;
 
 /// <summary>
 /// Unit tests for the translation between the templating engine's parameter model
-/// (<see cref="QueryParams"/>) and the data layer's (<c>DbQueryParams</c>).
+/// (<see cref="TemplateDataModel"/>) and the data layer's (<c>DbQueryParams</c>).
 /// </summary>
 public class MappingTests
 {
     [Fact]
-    public void BuildMarkerRegex_Defaults_MatchDoubleBraces()
+    public void MarkerPattern_Defaults_MatchDoubleBraces()
     {
-        var pattern = DbTemplateDataProvider.BuildMarkerRegex(null, null);
+        var pattern = TemplateDataModel.PatternFor(null, null);
         var match = Regex.Match("where a = {{name}}", pattern);
 
         Assert.True(match.Success);
@@ -23,9 +23,9 @@ public class MappingTests
     }
 
     [Fact]
-    public void BuildMarkerRegex_CustomMarkers_AreHonoured()
+    public void MarkerPattern_CustomMarkers_AreHonoured()
     {
-        var pattern = DbTemplateDataProvider.BuildMarkerRegex("[[", "]]");
+        var pattern = TemplateDataModel.PatternFor("[[", "]]");
         var match = Regex.Match("where a = [[city]]", pattern);
 
         Assert.True(match.Success);
@@ -33,10 +33,10 @@ public class MappingTests
     }
 
     [Fact]
-    public void BuildMarkerRegex_RegexMetacharactersInMarkers_AreEscaped()
+    public void MarkerPattern_RegexMetacharactersInMarkers_AreEscaped()
     {
         // '|' and '$' are regex metacharacters; unescaped they would change the pattern's meaning.
-        var pattern = DbTemplateDataProvider.BuildMarkerRegex("$(", ")$");
+        var pattern = TemplateDataModel.PatternFor("$(", ")$");
         var match = Regex.Match("where a = $(total)$", pattern);
 
         Assert.True(match.Success);
@@ -44,19 +44,19 @@ public class MappingTests
     }
 
     [Fact]
-    public void BuildMarkerRegex_EmptyMarkers_FallBackToDefaults()
+    public void MarkerPattern_EmptyMarkers_FallBackToDefaults()
     {
-        var pattern = DbTemplateDataProvider.BuildMarkerRegex("", "");
+        var pattern = TemplateDataModel.PatternFor("", "");
         Assert.Matches(pattern, "where a = {{x}}");
     }
 
     [Fact]
-    public void BuildMarkerRegex_AsymmetricMarkers_AreSupported()
+    public void MarkerPattern_AsymmetricMarkers_AreSupported()
     {
         // Real production templates set only open-marker and let the close default, e.g.
         //   <h-embedded-data open-marker="{v1{"> ... {v1{name}}
         // so the two markers must be escaped and defaulted independently.
-        var pattern = DbTemplateDataProvider.BuildMarkerRegex("{v1{", null);
+        var pattern = TemplateDataModel.PatternFor("{v1{", null);
         var match = Regex.Match("temp 1 name = {v1{name}}", pattern);
 
         Assert.True(match.Success);
@@ -66,10 +66,10 @@ public class MappingTests
     [Fact]
     public void MapQueryParams_AsymmetricMarkers_SurviveTheMapping()
     {
-        var input = new List<QueryParams>
+        var input = new List<TemplateDataModel>
         {
-            // OpenMarker overridden, CloseMarker left at its default.
-            new() { DataModel = new { name = "x" }, OpenMarker = "{v1{" }
+            // open marker overridden, close marker left at its default.
+            new() { Model = new { name = "x" }, MarkerPattern = TemplateDataModel.PatternFor("{v1{") }
         };
 
         var mapped = DbTemplateDataProvider.MapQueryParams(input);
@@ -87,16 +87,16 @@ public class MappingTests
     [Fact]
     public void MapQueryParams_EmptySequence_ReturnsNull()
     {
-        Assert.Null(DbTemplateDataProvider.MapQueryParams(new List<QueryParams>()));
+        Assert.Null(DbTemplateDataProvider.MapQueryParams(new List<TemplateDataModel>()));
     }
 
     [Fact]
     public void MapQueryParams_EntriesWithoutDataModel_AreSkipped()
     {
-        var input = new List<QueryParams>
+        var input = new List<TemplateDataModel>
         {
-            new() { DataModel = null },
-            new() { DataModel = new { a = 1 } }
+            new() { Model = null },
+            new() { Model = new { a = 1 } }
         };
 
         var mapped = DbTemplateDataProvider.MapQueryParams(input);
@@ -109,9 +109,9 @@ public class MappingTests
     public void MapQueryParams_CarriesDataModelAndMarkersAcross()
     {
         var model = new { country = "JO" };
-        var input = new List<QueryParams>
+        var input = new List<TemplateDataModel>
         {
-            new() { DataModel = model, OpenMarker = "<%", CloseMarker = "%>" }
+            new() { Model = model, MarkerPattern = TemplateDataModel.PatternFor("<%", "%>") }
         };
 
         var mapped = DbTemplateDataProvider.MapQueryParams(input);
@@ -125,10 +125,10 @@ public class MappingTests
     [Fact]
     public void MapQueryParams_PreservesOrderOfMultipleModels()
     {
-        var input = new List<QueryParams>
+        var input = new List<TemplateDataModel>
         {
-            new() { DataModel = new { first = 1 } },
-            new() { DataModel = new { second = 2 }, OpenMarker = "[[", CloseMarker = "]]" }
+            new() { Model = new { first = 1 } },
+            new() { Model = new { second = 2 }, MarkerPattern = TemplateDataModel.PatternFor("[[", "]]") }
         };
 
         var mapped = DbTemplateDataProvider.MapQueryParams(input);

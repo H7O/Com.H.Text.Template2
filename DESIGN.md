@@ -1,24 +1,48 @@
 # Com.H.Text.Template2 — design
 
-**Date:** 2026-07-29
-**Status:** initial implementation
+**Date:** 2026-07-29 (glue architecture) · **2026-08-01** (native engine)
+**Status:** native engine
 
 ## What this package is
 
-A thin **glue** package. It contains no templating engine and no database layer of its own.
-It wires the two together:
+A **native templating engine**, template-file compatible with the original
+`Com.H.Text.Template` (same tags, markers, date placeholders and repeat-per-row semantics —
+pinned by `tests/LegacyParityTests.cs`, whose expected values were captured by running the
+original engine), plus the ADO.NET data provider that executes embedded queries with real SQL
+parameters.
 
 ```
-Com.H                          Com.H.Data.Common
-(template rendering engine)    (DbConnection querying, parameterised)
-        \                              /
-         \                            /
-          Com.H.Text.Template2
-             (this package — the adapter)
+Com.H.Text.Template2
+├── TemplateEngine            the renderer (natively async)
+├── ITemplateDataProvider     how data blocks get their rows
+└── DbTemplateDataProvider    the ADO.NET implementation, via Com.H.Data.Common
 ```
 
-Neither base package depends on the other. Only the glue depends on both. A consumer who
-wants templating without a database references `Com.H` alone and pays nothing for this.
+Its only dependency is `Com.H.Data.Common`. It does not reference `Com.H`; the legacy engine
+there remains untouched for the applications that already use it.
+
+### History: this started as glue
+
+The first (unpublished) iteration of this package was a thin adapter that fed the legacy
+engine's `dataProviders` delegate with a parameterising provider. That proved the seam, and
+its tests pinned the engine's observable behaviour — which is precisely what made a native
+reimplementation safe: the rewrite had to keep 40+ behavioural tests green. The sections
+below record the original glue-era decisions, still relevant as context.
+
+### What the native engine fixed over the legacy one
+
+| Legacy behaviour | Native engine |
+|---|---|
+| Synchronous only; blocked on async ADO.NET internally | natively async end-to-end, sync wrappers on top |
+| Markers interpolated into regex unescaped — `[[` silently failed, `<` threw `XmlException` | markers escaped; attributes parsed tolerantly, not as XML |
+| Second `<h-embedded-data>` silently ignored | loud `NotSupportedException` pointing at nested templates |
+| Include cycles hung / overflowed | depth guard with a clear error |
+| `queryParamsList` grow-bug (todo'd in legacy source) | immutable per-row model chains |
+| `$` in replacement values could corrupt output on netstandard2.0 | escaped |
+
+And added, since template syntax was declared open: relative include URIs, `src` on the data
+tag (query in its own file), `content-type="json"` self-contained data blocks (REST APIs as a
+data source), and `header-*` / `referrer` / `user-agent` attributes for HTTP fetches.
 
 ## Why a separate package rather than merging
 

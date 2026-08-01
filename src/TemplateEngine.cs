@@ -1,0 +1,576 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Com.H.Data.Common;
+
+namespace Com.H.Text.Template2
+{
+    /// <summary>
+    /// The rendering engine. Template-file compatible with the original
+    /// <c>Com.H.Text.Template</c> engine — same tags, markers, date placeholders and
+    /// repeat-per-row semantics, pinned by the test suite — reimplemented natively async with
+    /// the legacy sharp edges removed (markers are regex-escaped, attributes are parsed
+    /// tolerantly rather than as XML, a second data tag in one file is a loud error instead of
+    /// being silently ignored, and include cycles are detected).
+    /// </summary>
+    internal static class TemplateEngine
+    {
+        /// <summary>
+        /// Nested-template depth limit. Deep enough for any real composition; shallow enough to
+        /// turn an include cycle into a clear error rather than a hang.
+        /// </summary>
+        internal const int MaxDepth = 32;
+
+        private const RegexOptions TagOptions =
+            RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.Compiled;
+
+        // Attribute sections tolerate '>' inside quoted values (e.g. close-marker="%>"), which
+        // both raw XML parsing and the legacy non-greedy tag regex could not.
+        private const string AttrsSection = @"(?<attrs>(?:[^>""]|""[^""]*"")*?)";
+
+        // (?![\w-]) stops <h-embedded-data-extra> being taken for <h-embedded-data>.
+        // The CDATA body may not span another tag of the same kind, so a malformed terminator
+        // fails loudly instead of silently swallowing the document up to the next one.
+        private static readonly Regex DataTagRegex = new(
+            @"<\s*h-embedded-data(?![\w-])" + AttrsSection
+            + @"(?:/\s*>|>\s*(?:<!\[CDATA\[(?<query>(?:(?!\]\]>|<\s*/?\s*h-embedded-data(?![\w-])).)*)\]\]>)?\s*<\s*/\s*h-embedded-data\s*>)",
+            TagOptions);
+
+        private static readonly Regex TemplateTagRegex = new(
+            @"<\s*h-embedded-template(?![\w-])" + AttrsSection
+            + @">\s*<!\[CDATA\[(?<uri>(?:(?!\]\]>|<\s*/?\s*h-embedded-template(?![\w-])).)*)\]\]>\s*<\s*/\s*h-embedded-template\s*>",
+            TagOptions);
+
+        /// <summary>Detects a data tag the strict pattern could not parse, so it can be reported.</summary>
+        private static readonly Regex LooseDataTagRegex = new(
+            @"<\s*h-embedded-data(?![\w-])", TagOptions);
+
+        private static readonly Regex AttributeRegex = new(
+            @"(?<name>[A-Za-z_][\w\-]*)\s*=\s*""(?<value>[^""]*)""",
+            RegexOptions.Compiled);
+
+        private static readonly Lazy<HttpClient> Http = new(() => new HttpClient());
+
+        // marker patterns are supplied per model and repeat across rows; compiling each once
+        // keeps the per-row cost linear
+        private static readonly Dictionary<string, Regex> MarkerRegexCache = new();
+
+        private static Regex MarkerRegex(string? pattern)
+        {
+            var key = string.IsNullOrWhiteSpace(pattern) ? TemplateDataModel.DefaultPattern : pattern!;
+            lock (MarkerRegexCache)
+            {
+                if (!MarkerRegexCache.TryGetValue(key, out var regex))
+                {
+                    regex = new Regex(key, RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                    MarkerRegexCache[key] = regex;
+                }
+                return regex;
+            }
+        }
+
+        // ------------------------------------------------------------------ core
+
+        internal static async Task<string?> RenderAsync(
+            string? content,
+            Uri? parentUri,
+            List<TemplateDataModel> models,
+            ITemplateDataProvider? provider,
+            string? referrer,
+            string? userAgent,
+            int depth,
+            CancellationToken ct)
+        {
+            if (depth > MaxDepth)
+                throw new InvalidOperationException(
+                    $"Nested template depth exceeded {MaxDepth}. "
+                    + "This usually means two templates include each other in a cycle.");
+
+            if (string.IsNullOrWhiteSpace(content)) return content;
+            ct.ThrowIfCancellationRequested();
+
+            content = FillDates(content!);
+
+            var dataMatches = DataTagRegex.Matches(content).Cast<Match>().ToList();
+            if (dataMatches.Count > 1)
+                throw new NotSupportedException(
+                    "A template may contain only one <h-embedded-data> block, because its rows "
+                    + "repeat the whole template. To compose multiple queries in one document, "
+                    + "put each query in its own file and include them with <h-embedded-template>.");
+
+            // Every opening tag must have been parsed. An unparseable one must not fall through
+            // and be rendered verbatim — that would publish the query, and any connection-string
+            // attribute, straight into the output.
+            if (LooseDataTagRegex.Matches(content).Count > dataMatches.Count)
+                throw new FormatException(
+                    "An <h-embedded-data> tag could not be parsed. Expected "
+                    + "<h-embedded-data …><![CDATA[ query ]]></h-embedded-data>, a self-closing "
+                    + "<h-embedded-data … />, or a src attribute. Check that the CDATA section is "
+                    + "terminated with ]]> and that the closing tag is present.");
+
+            if (dataMatches.Count == 0)
+                return await RenderPassAsync(
+                    content, parentUri, models, provider, referrer, userAgent, depth, ct)
+                    .ConfigureAwait(false);
+
+            var tag = dataMatches[0];
+            var attrs = ParseAttributes(tag.Groups["attrs"].Value);
+
+            var markerPattern = MarkerPatternFromAttributes(attrs);
+            var nullValue = GetAttr(attrs, "null-value") ?? "null";
+            _ = bool.TryParse(GetAttr(attrs, "pre-render") ?? "false", out var preRender);
+            var contentType = GetAttr(attrs, "content-type");
+
+            var query = tag.Groups["query"].Success ? tag.Groups["query"].Value : null;
+            var src = GetAttr(attrs, "src");
+            if (string.IsNullOrWhiteSpace(query) && !string.IsNullOrWhiteSpace(src))
+            {
+                var srcUri = ResolveUri(src!, parentUri, models);
+                query = await FetchAsync(
+                    srcUri,
+                    FillAttr(GetAttr(attrs, "referrer"), models) ?? referrer,
+                    FillAttr(GetAttr(attrs, "user-agent"), models) ?? userAgent,
+                    CollectHeaders(attrs, models), ct).ConfigureAwait(false);
+            }
+
+            var body = content.Remove(tag.Index, tag.Length);
+
+            IEnumerable<dynamic>? rows;
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                rows = null;
+            }
+            else if (string.Equals(contentType, "json", StringComparison.OrdinalIgnoreCase))
+            {
+                // the block's content IS the data: a JSON array (or single object) fetched from
+                // a REST API via src, or embedded directly — no database and no provider involved
+                rows = ParseJsonRows(query!);
+            }
+            else if (provider is not null)
+            {
+                // pre-render substitutes values into the query text before execution. It is
+                // unsafe by construction, which is why DbTemplateDataProvider rejects it unless
+                // explicitly allowed — but when allowed it has to actually happen here, since
+                // the provider only ever sees the finished query.
+                var effectiveQuery = preRender ? FillModels(query!, models) : query;
+
+                rows = await provider.GetDataAsync(new TemplateDataRequest
+                {
+                    Query = effectiveQuery,
+                    ConnectionString = GetAttr(attrs, "connection-string"),
+                    ContentType = contentType,
+                    PreRender = preRender,
+                    Attributes = attrs,
+                    DataModels = models.ToList(),
+                    CancellationToken = ct
+                }, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                rows = null; // no data source: render once with the existing models
+            }
+
+            if (rows is null)
+                return await RenderPassAsync(
+                    body, parentUri, models, provider, referrer, userAgent, depth, ct)
+                    .ConfigureAwait(false);
+
+            var sb = new StringBuilder();
+            foreach (var row in rows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var rowModels = new List<TemplateDataModel>(models)
+                {
+                    new TemplateDataModel
+                    {
+                        Model = (object?)row,
+                        MarkerPattern = markerPattern,
+                        NullValue = nullValue
+                    }
+                };
+                sb.Append(await RenderPassAsync(
+                    body, parentUri, rowModels, provider, referrer, userAgent, depth, ct)
+                    .ConfigureAwait(false));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>One pass over query-free content: fill markers, then resolve includes.</summary>
+        private static async Task<string> RenderPassAsync(
+            string text,
+            Uri? parentUri,
+            List<TemplateDataModel> models,
+            ITemplateDataProvider? provider,
+            string? referrer,
+            string? userAgent,
+            int depth,
+            CancellationToken ct)
+        {
+            // Includes are located in the ORIGINAL text, before any value is substituted. Filling
+            // first and searching afterwards would let a database row or REST payload containing
+            // <h-embedded-template> trigger a fetch — an arbitrary file read / SSRF primitive.
+            // Only text the template author wrote can name a template.
+            var includes = TemplateTagRegex.Matches(text).Cast<Match>().ToList();
+            if (includes.Count == 0) return FillModels(text, models);
+
+            var sb = new StringBuilder(text.Length);
+            var cursor = 0;
+            foreach (var m in includes)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                // literal text between includes is marker-filled; substituted values land in the
+                // output and are never revisited
+                sb.Append(FillModels(text.Substring(cursor, m.Index - cursor), models));
+
+                sb.Append(await RenderIncludeAsync(
+                    m, parentUri, models, provider, referrer, userAgent, depth, ct)
+                    .ConfigureAwait(false));
+
+                cursor = m.Index + m.Length;
+            }
+            sb.Append(FillModels(text.Substring(cursor), models));
+            return sb.ToString();
+        }
+
+        private static async Task<string?> RenderIncludeAsync(
+            Match tag,
+            Uri? parentUri,
+            List<TemplateDataModel> models,
+            ITemplateDataProvider? provider,
+            string? referrer,
+            string? userAgent,
+            int depth,
+            CancellationToken ct)
+        {
+            var uriText = tag.Groups["uri"].Value;
+            if (string.IsNullOrWhiteSpace(uriText)) return "";
+
+            var attrs = ParseAttributes(tag.Groups["attrs"].Value);
+            var subReferrer = FillAttr(GetAttr(attrs, "referrer"), models) ?? referrer;
+            var subUserAgent = FillAttr(GetAttr(attrs, "user-agent"), models) ?? userAgent;
+
+            var uri = ResolveUri(uriText, parentUri, models);
+            var fetched = await FetchAsync(
+                uri, subReferrer, subUserAgent, CollectHeaders(attrs, models), ct)
+                .ConfigureAwait(false);
+
+            return await RenderAsync(
+                fetched, new Uri(uri, "."), models, provider,
+                subReferrer, subUserAgent, depth + 1, ct).ConfigureAwait(false);
+        }
+
+        // ------------------------------------------------------------------ marker filling
+
+        /// <summary>
+        /// Fills markers in a single left-to-right pass over the original text.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Substituted values are never re-examined. That is a security property, not an
+        /// optimisation: a value arriving from a database row or a REST payload may itself
+        /// contain <c>{{marker}}</c> or <c>&lt;h-embedded-template&gt;</c> text, and re-scanning
+        /// would let untrusted data pull other values out of the caller's model — or trigger a
+        /// file read. Data is data.
+        /// </para>
+        /// <para>
+        /// Where two models could fill the same span the most recently added wins, matching the
+        /// original engine: a data block's row values override outer values of the same name,
+        /// and a winning model with no matching value substitutes its own
+        /// <see cref="TemplateDataModel.NullValue"/> rather than deferring to an older model.
+        /// Names match case-insensitively. Values format with the current culture, as the
+        /// original engine did, so localised templates keep rendering as they did.
+        /// </para>
+        /// </remarks>
+        internal static string FillModels(string text, List<TemplateDataModel> models)
+        {
+            if (models.Count == 0 || string.IsNullOrEmpty(text)) return text;
+
+            // resolve every candidate span against the ORIGINAL text
+            var candidates = new List<(int Start, int Length, int ModelIndex, string Name)>();
+            for (var i = 0; i < models.Count; i++)
+            {
+                var markerRegex = MarkerRegex(models[i].MarkerPattern);
+
+                foreach (var m in markerRegex.Matches(text).Cast<Match>())
+                {
+                    var name = m.Groups["param"].Value;
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+                    candidates.Add((m.Index, m.Length, i, name));
+                }
+            }
+            if (candidates.Count == 0) return text;
+
+            // earliest span first; on a tie the newest model, then the longest match
+            candidates.Sort((a, b) =>
+            {
+                var c = a.Start.CompareTo(b.Start);
+                if (c != 0) return c;
+                c = b.ModelIndex.CompareTo(a.ModelIndex);
+                if (c != 0) return c;
+                return b.Length.CompareTo(a.Length);
+            });
+
+            var valuesByModel = new IDictionary<string, object>?[models.Count];
+            var resolved = new bool[models.Count];
+
+            var sb = new StringBuilder(text.Length);
+            var cursor = 0;
+            foreach (var c in candidates)
+            {
+                if (c.Start < cursor) continue; // overlaps an already-emitted substitution
+
+                var entry = models[c.ModelIndex];
+                if (!resolved[c.ModelIndex])
+                {
+                    valuesByModel[c.ModelIndex] = entry.Model is null
+                        ? null
+                        : DataExtensions.GetDataModelParameters(entry.Model);
+                    resolved[c.ModelIndex] = true;
+                }
+
+                object? value = null;
+                var values = valuesByModel[c.ModelIndex];
+                if (values is not null && values.TryGetValue(c.Name, out var v)) value = v;
+
+                sb.Append(text, cursor, c.Start - cursor);
+                sb.Append(value is null
+                    ? entry.NullValue ?? ""
+                    : Convert.ToString(value, CultureInfo.CurrentCulture) ?? "");
+                cursor = c.Start + c.Length;
+            }
+            sb.Append(text, cursor, text.Length - cursor);
+            return sb.ToString();
+        }
+
+        // ------------------------------------------------------------------ date placeholders
+
+        private static string FillDates(string content)
+            => FillDate(
+                FillDate(
+                    FillDate(content, "{now{", () => DateTime.Now),
+                    "{tomorrow{", () => DateTime.Today.AddDays(1)),
+                "{yesterday{", () => DateTime.Today.AddDays(-1));
+
+        private static string FillDate(string content, string open, Func<DateTime> dateFactory)
+        {
+            if (content.IndexOf(open, StringComparison.Ordinal) < 0) return content;
+
+            var regex = new Regex(Regex.Escape(open) + @"(?<f>.*?)\}\}");
+            DateTime? date = null;
+            return regex.Replace(content, m =>
+            {
+                var format = m.Groups["f"].Value;
+                if (string.IsNullOrEmpty(format)) return m.Value;
+                date ??= dateFactory();
+                // current culture, as the original engine used, so localised month and day
+                // names in existing templates keep rendering the same way
+                return date.Value.ToString(format, CultureInfo.CurrentCulture);
+            });
+        }
+
+        // ------------------------------------------------------------------ attributes & headers
+
+        /// <summary>
+        /// Parses a tag's attributes with a tolerant regex rather than an XML parser, so values
+        /// containing characters XML forbids (a bare <c>&lt;</c>, for instance) still work.
+        /// Keys are case-insensitive with <c>_</c> normalised to <c>-</c>.
+        /// </summary>
+        internal static Dictionary<string, string?> ParseAttributes(string attrsText)
+        {
+            var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(attrsText)) return result;
+
+            foreach (var m in AttributeRegex.Matches(attrsText).Cast<Match>())
+            {
+                var written = m.Groups["name"].Value;
+                var key = written.Replace('_', '-');
+                result[key] = m.Groups["value"].Value;
+                if (!string.Equals(written, key, StringComparison.Ordinal))
+                    result[OriginalNameKey + key] = written;
+            }
+            return result;
+        }
+
+        private static string? GetAttr(Dictionary<string, string?> attrs, string name)
+            => attrs.TryGetValue(name, out var v) ? v : null;
+
+        /// <summary>
+        /// Builds a model's marker pattern from a tag's attributes: <c>marker-pattern</c>
+        /// verbatim if present, otherwise derived from <c>open-marker</c> / <c>close-marker</c>.
+        /// </summary>
+        internal static string MarkerPatternFromAttributes(Dictionary<string, string?> attrs)
+        {
+            var explicitPattern = GetAttr(attrs, "marker-pattern");
+            if (!string.IsNullOrWhiteSpace(explicitPattern)) return explicitPattern!;
+
+            var open = GetAttr(attrs, "open-marker");
+            var close = GetAttr(attrs, "close-marker");
+            if (string.IsNullOrEmpty(open) && string.IsNullOrEmpty(close))
+                return TemplateDataModel.DefaultPattern;
+
+            // a custom open marker also accepts the generic {{name}} form, matching the
+            // convention Com.H's other libraries use (e.g. {{name}} or {j{name}})
+            return TemplateDataModel.PatternFor(open, close, alsoGeneric: true);
+        }
+
+        /// <summary>Marker-fills an attribute value, so headers can carry template data.</summary>
+        private static string? FillAttr(string? value, List<TemplateDataModel> models)
+            => string.IsNullOrEmpty(value) ? value : FillModels(value!, models);
+
+        /// <summary>
+        /// Collects <c>header-*</c> attributes as HTTP headers for URI fetches, marker-filled so
+        /// values such as <c>Bearer {{token}}</c> work.
+        /// </summary>
+        /// <remarks>
+        /// Names keep their underscores — <c>header-X_Trace</c> sends <c>X_Trace</c> — and any
+        /// value containing CR or LF is rejected rather than sent, since a marker-filled value is
+        /// runtime data and could otherwise split the request.
+        /// </remarks>
+        internal static Dictionary<string, string> CollectHeaders(
+            Dictionary<string, string?> attrs, List<TemplateDataModel> models)
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in attrs)
+            {
+                if (!kv.Key.StartsWith("header-", StringComparison.OrdinalIgnoreCase)
+                    || kv.Key.Length <= 7
+                    || kv.Value is null) continue;
+
+                var name = OriginalHeaderName(attrs, kv.Key).Substring(7);
+                var value = FillAttr(kv.Value, models) ?? "";
+
+                if (value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0)
+                    throw new FormatException(
+                        $"The value for header '{name}' contains a line break after marker "
+                        + "substitution, which would split the HTTP request. Header values cannot "
+                        + "contain CR or LF.");
+
+                headers[name] = value;
+            }
+            return headers;
+        }
+
+        /// <summary>
+        /// Recovers a header attribute's name as written. Attribute keys are normalised so that
+        /// <c>connection_string</c> and <c>connection-string</c> are one key, but an HTTP header
+        /// name is case- and underscore-significant, so the original spelling is preserved.
+        /// </summary>
+        private static string OriginalHeaderName(Dictionary<string, string?> attrs, string normalisedKey)
+            => attrs.TryGetValue(OriginalNameKey + normalisedKey, out var original) && original is not null
+                ? original
+                : normalisedKey;
+
+        private const string OriginalNameKey = " orig:";
+
+        // ------------------------------------------------------------------ URIs & fetching
+
+        /// <summary>
+        /// Resolves a template-supplied URI: <c>{uri{.}}</c>/<c>{uri{./}}</c> placeholders, then
+        /// data-model markers, then — new to this engine — plain relative paths against the
+        /// including template's location.
+        /// </summary>
+        internal static Uri ResolveUri(string uriText, Uri? parentUri, List<TemplateDataModel> models)
+        {
+            var parent = parentUri ?? new Uri(AppendSlash(AppContext.BaseDirectory));
+            var parentText = parent.AbsoluteUri;
+            if (!parentText.EndsWith("/", StringComparison.Ordinal)) parentText += "/";
+
+            uriText = uriText
+                .Replace("{uri{./}}", parentText)
+                .Replace("{uri{.}}", parentText.Substring(0, parentText.Length - 1));
+
+            uriText = FillModels(uriText, models).Trim();
+
+            if (Uri.TryCreate(uriText, UriKind.Absolute, out var absolute)) return absolute;
+            if (Uri.TryCreate(parent, uriText, out var relative)) return relative;
+
+            throw new FormatException($"Invalid template uri: {uriText}");
+        }
+
+        internal static async Task<string> FetchAsync(
+            Uri uri,
+            string? referrer,
+            string? userAgent,
+            Dictionary<string, string> headers,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (uri.IsFile)
+            {
+                using var reader = new StreamReader(uri.LocalPath);
+                return await reader.ReadToEndAsync().ConfigureAwait(false);
+            }
+
+            if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                if (!string.IsNullOrWhiteSpace(referrer)
+                    && Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri))
+                    request.Headers.Referrer = referrerUri;
+                if (!string.IsNullOrWhiteSpace(userAgent))
+                    request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+                foreach (var kv in headers)
+                {
+                    if (request.Headers.TryAddWithoutValidation(kv.Key, kv.Value)) continue;
+
+                    // Content-Type and friends are content headers, which HttpRequestHeaders
+                    // rejects. A GET has no body to hang them on, so attach an empty one rather
+                    // than dropping the header silently — the previous behaviour discarded this
+                    // return value, and the caller never learned the header had not been sent.
+                    request.Content ??= new ByteArrayContent(Array.Empty<byte>());
+                    if (!request.Content.Headers.TryAddWithoutValidation(kv.Key, kv.Value))
+                        throw new FormatException(
+                            $"Header '{kv.Key}' could not be added to the template fetch request. "
+                            + "Check the header name and value.");
+                }
+
+                using var response = await Http.Value.SendAsync(request, ct).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            }
+
+            throw new NotSupportedException(
+                $"Unsupported template uri scheme '{uri.Scheme}' for {uri}. "
+                + "Supported: file, http, https.");
+        }
+
+        private static string AppendSlash(string path)
+            => path.EndsWith("/", StringComparison.Ordinal)
+               || path.EndsWith("\\", StringComparison.Ordinal)
+                ? path
+                : path + Path.DirectorySeparatorChar;
+
+        // ------------------------------------------------------------------ json data blocks
+
+        /// <summary>
+        /// Turns a <c>content-type="json"</c> block's content into rows: array elements each
+        /// become a row; a single object becomes one row.
+        /// </summary>
+        internal static List<dynamic> ParseJsonRows(string json)
+        {
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
+            var rows = new List<dynamic>();
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var element in doc.RootElement.EnumerateArray())
+                    rows.Add(element.Clone());
+            }
+            else
+            {
+                rows.Add(doc.RootElement.Clone());
+            }
+            return rows;
+        }
+    }
+}

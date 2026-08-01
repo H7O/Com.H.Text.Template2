@@ -1,34 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
-using System.Linq;
 using System.Text.RegularExpressions;
-using Com.H.Data;
+using System.Threading;
+using System.Threading.Tasks;
 using Com.H.Data.Common;
-using Com.H.Text.Template;
 
 namespace Com.H.Text.Template2
 {
     /// <summary>
-    /// Supplies the Com.H templating engine with data from any ADO.NET database.
+    /// The ADO.NET data provider: satisfies a template's <c>&lt;h-embedded-data&gt;</c> blocks by
+    /// executing their queries through <c>Com.H.Data.Common</c>, which converts
+    /// <c>{{marker}}</c> occurrences into real <see cref="DbParameter"/> objects.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The engine exposes a <c>Func&lt;TemplateMultiDataRequest, IEnumerable&lt;dynamic&gt;?&gt;</c>
-    /// extension point and deliberately hands over the query text <em>un-substituted</em>, so that
-    /// the provider can apply its own SQL injection protection. This class is that provider:
-    /// every query is executed through <c>Com.H.Data.Common</c>, which converts
-    /// <c>{{marker}}</c> occurrences into real <see cref="DbParameter"/> objects.
-    /// </para>
-    /// <para>
     /// No value is ever substituted into SQL as text. Safety is structural rather than a matter
     /// of remembering to escape.
-    /// </para>
     /// </remarks>
-    public sealed class DbTemplateDataProvider
+    public sealed class DbTemplateDataProvider : ITemplateDataProvider
     {
         private readonly DbConnection? _connection;
-        private readonly Func<TemplateMultiDataRequest, DbConnection>? _connectionFactory;
+        private readonly Func<TemplateDataRequest, DbConnection>? _connectionFactory;
         private readonly bool _allowPreRender;
         private readonly int? _commandTimeout;
 
@@ -72,12 +64,12 @@ namespace Com.H.Text.Template2
         /// The <c>connection-string</c> attribute a template may carry is <b>not</b> honoured
         /// automatically. A template is data, and data should not be able to point the
         /// application at an arbitrary database. Reading
-        /// <see cref="TemplateMultiDataRequest.ConnectionString"/> inside your factory is an
-        /// explicit, deliberate opt-in.
+        /// <see cref="TemplateDataRequest.ConnectionString"/> inside your factory is an explicit,
+        /// deliberate opt-in.
         /// </remarks>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="connectionFactory"/> is null.</exception>
         public DbTemplateDataProvider(
-            Func<TemplateMultiDataRequest, DbConnection> connectionFactory,
+            Func<TemplateDataRequest, DbConnection> connectionFactory,
             bool allowPreRender = false,
             int? commandTimeout = null)
         {
@@ -87,35 +79,24 @@ namespace Com.H.Text.Template2
         }
 
         /// <summary>
-        /// The delegate to hand to <c>RenderContent</c>'s <c>dataProviders</c> parameter.
+        /// Executes the query carried by a template's data block and returns its rows.
         /// </summary>
-        /// <example>
-        /// <code>
-        /// var provider = new DbTemplateDataProvider(connection);
-        /// var html = template.RenderContent(dataProviders: provider.GetData);
-        /// </code>
-        /// </example>
-        public Func<TemplateMultiDataRequest, IEnumerable<dynamic>?> GetData => Execute;
-
-        /// <summary>
-        /// Executes the query carried by a template's data tag and returns its rows.
-        /// </summary>
-        /// <param name="request">The request assembled by the templating engine.</param>
+        /// <param name="request">The request assembled by the engine.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
         /// <returns>
-        /// The result rows, or null when the request carries no query. Rows are fully materialised
-        /// so that the underlying reader is closed before returning — the engine's delegate
-        /// signature gives the provider no opportunity to dispose afterwards.
+        /// The result rows, or null when the request carries no query. Rows are fully
+        /// materialised so the underlying reader closes before returning.
         /// </returns>
         /// <exception cref="NotSupportedException">
         /// Thrown when the template requests <c>pre-render="true"</c> and pre-rendering was not
         /// explicitly enabled.
         /// </exception>
-        public IEnumerable<dynamic>? Execute(TemplateMultiDataRequest request)
+        public async Task<IEnumerable<dynamic>?> GetDataAsync(
+            TemplateDataRequest request,
+            CancellationToken cancellationToken = default)
         {
-            if (request is null) return null;
-
-            var query = request.Request;
-            if (string.IsNullOrWhiteSpace(query)) return null;
+            var query = request?.Query;
+            if (request is null || string.IsNullOrWhiteSpace(query)) return null;
 
             if (request.PreRender && !_allowPreRender)
             {
@@ -128,70 +109,90 @@ namespace Com.H.Text.Template2
                     + "provider with allowPreRender: true — and only for templates you control.");
             }
 
-            var queryParams = MapQueryParams(request.QueryParamsList);
+            var queryParams = MapQueryParams(request.DataModels);
 
             if (_connection is not null)
             {
                 // Caller owns the connection; leave it open for subsequent (possibly nested) requests.
-                using var result = _connection.ExecuteQuery(
-                    query!,
-                    queryParams,
-                    commandTimeout: _commandTimeout,
-                    closeConnectionOnExit: false,
-                    cToken: request.CancellationToken ?? default);
-
-                return result.AsEnumerable().ToList();
+                return await ExecuteAsync(
+                    _connection, query!, queryParams,
+                    closeConnectionOnExit: false, cancellationToken).ConfigureAwait(false);
             }
 
             var connection = _connectionFactory!(request)
                 ?? throw new InvalidOperationException(
                     "The connection factory returned null for a template data request.");
 
-            using var factoryResult = connection.ExecuteQuery(
-                query!,
+            try
+            {
+                return await ExecuteAsync(
+                    connection, query!, queryParams,
+                    closeConnectionOnExit: true, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // this provider owns a factory-created connection; closeConnectionOnExit only
+                // applies once execution succeeds, so a failure here would otherwise leak it
+                try { connection.Dispose(); } catch { }
+                throw;
+            }
+        }
+
+        private async Task<List<dynamic>> ExecuteAsync(
+            DbConnection connection,
+            string query,
+            List<DbQueryParams>? queryParams,
+            bool closeConnectionOnExit,
+            CancellationToken cancellationToken)
+        {
+            await using var result = await connection.ExecuteQueryAsync(
+                query,
                 queryParams,
                 commandTimeout: _commandTimeout,
-                closeConnectionOnExit: true,
-                cToken: request.CancellationToken ?? default);
+                closeConnectionOnExit: closeConnectionOnExit,
+                cToken: cancellationToken).ConfigureAwait(false);
 
-            return factoryResult.AsEnumerable().ToList();
+            var rows = new List<dynamic>();
+            await foreach (var row in result.AsAsyncEnumerable()
+                .WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add(row);
+            }
+            return rows;
         }
 
         /// <summary>
-        /// Translates the engine's parameter model into the one the data layer understands.
+        /// Translates the engine's data-model chain into the data layer's parameter model.
         /// </summary>
         /// <remarks>
-        /// <see cref="QueryParams.NullReplacement"/> is deliberately not carried across. It exists
-        /// to substitute the literal text "null" into a query, whereas parameterised execution
-        /// binds a genuine <c>DBNull</c> — which is both safer and more correct.
+        /// <para>
+        /// A pass-through: <see cref="TemplateDataModel.MarkerPattern"/> is deliberately the same
+        /// named-group shape as <c>DbQueryParams.QueryParamsRegex</c>, so a template's markers
+        /// address query parameters without any translation.
+        /// </para>
+        /// <para>
+        /// <see cref="TemplateDataModel.NullValue"/> is not carried across. It substitutes text
+        /// into the rendered body, whereas parameterised execution binds a genuine <c>DBNull</c> —
+        /// both safer and more correct.
+        /// </para>
         /// </remarks>
-        internal static List<DbQueryParams>? MapQueryParams(IEnumerable<QueryParams>? queryParamsList)
+        internal static List<DbQueryParams>? MapQueryParams(IReadOnlyList<TemplateDataModel>? models)
         {
-            if (queryParamsList is null) return null;
+            if (models is null || models.Count == 0) return null;
 
-            var mapped = queryParamsList
-                .Where(x => x is not null && x.DataModel is not null)
-                .Select(x => new DbQueryParams
+            var mapped = new List<DbQueryParams>();
+            foreach (var entry in models)
+            {
+                if (entry?.Model is null) continue;
+                mapped.Add(new DbQueryParams
                 {
-                    DataModel = x.DataModel,
-                    QueryParamsRegex = BuildMarkerRegex(x.OpenMarker, x.CloseMarker)
-                })
-                .ToList();
-
+                    DataModel = entry.Model,
+                    QueryParamsRegex = string.IsNullOrWhiteSpace(entry.MarkerPattern)
+                        ? TemplateDataModel.DefaultPattern
+                        : entry.MarkerPattern
+                });
+            }
             return mapped.Count == 0 ? null : mapped;
-        }
-
-        /// <summary>
-        /// Builds the data layer's named-group regex from the engine's open/close marker pair.
-        /// </summary>
-        internal static string BuildMarkerRegex(string? openMarker, string? closeMarker)
-        {
-            var open = string.IsNullOrEmpty(openMarker) ? "{{" : openMarker!;
-            var close = string.IsNullOrEmpty(closeMarker) ? "}}" : closeMarker!;
-
-            return "(?<open_marker>" + Regex.Escape(open) + ")"
-                 + "(?<param>.*?)?"
-                 + "(?<close_marker>" + Regex.Escape(close) + ")";
         }
     }
 }
