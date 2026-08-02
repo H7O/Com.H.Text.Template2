@@ -303,7 +303,39 @@ It must define the named groups `open_marker`, `param` and `close_marker` — de
 same shape as `Com.H.Data.Common`'s `DbQueryParams.QueryParamsRegex`, so a template's markers
 address query parameters with no translation in between.
 
-## Example 10 — One template, with or without a database
+## Example 10 — Escaping values for HTML
+
+The engine writes values **verbatim**, because it does not know whether you are producing HTML,
+CSV, JSON or plain text. For HTML that matters: a company called `Smith & Sons <Holdings>` would
+break your markup, and a hostile value could inject a `<script>` tag.
+
+Say what you mean at the point of use:
+
+```html
+<td>{{issuer}}</td>       <!-- verbatim: Smith & Sons <Holdings> -->
+<td>{html{issuer}}</td>   <!-- encoded:  Smith &amp; Sons &lt;Holdings&gt; -->
+```
+
+| Marker | Encoding |
+|---|---|
+| `{{name}}` | none — the value is written exactly as it is |
+| `{html{name}}` | HTML/XML text and quoted attribute values |
+| `{url{name}}` | percent-encoding, for URLs and query strings |
+
+`{html{…}}` also escapes `"` and `'`, so a **quoted** attribute is safe:
+
+```html
+<td title="{html{note}}">…</td>
+```
+
+Encoding markers address whatever data is in scope, so they work regardless of a block's own
+`open-marker` — and, like every marker, an encoded value is still never re-scanned as template
+syntax.
+
+The `null-value` text is **not** encoded: you wrote it, so `null-value="<em>n/a</em>"` stays
+markup rather than becoming visible tags.
+
+## Example 11 — One template, with or without a database
 
 A template that contains a query can still be rendered without one. The query is skipped and the
 template renders **once**, with `{{markers}}` filled from the data model you passed:
@@ -342,7 +374,7 @@ instead of skipping:
 template.RenderContent(dataModel, throwIfQueryPresent: true);
 ```
 
-## Example 11 — Data from a REST API, no database at all
+## Example 12 — Data from a REST API, no database at all
 
 With `content-type="json"`, the block's content **is** the data — a JSON array whose elements
 become the rows. Point `src` at an API and the template becomes HTTP-driven:
@@ -372,7 +404,7 @@ template.RenderContent(new { });
 
 A single JSON object renders as one row. Nested objects and arrays arrive as raw JSON text.
 
-## Example 12 — SQL in its own file, includes by relative path
+## Example 13 — SQL in its own file, includes by relative path
 
 A query can live next to the template instead of inside it, via `src`:
 
@@ -418,7 +450,7 @@ var html = await new Uri(path).RenderContentAsync(connection, new { category = "
 | `marker-pattern` | A regex with named groups `open_marker` / `param` / `close_marker`, used instead of the pair above. |
 | `null-value` | Text substituted for a null column value (default `null`). |
 | `src` | Load the query (or, with `content-type="json"`, the data) from a URI instead of CDATA. Relative URIs resolve against the template. |
-| `content-type` | `json` makes the block self-contained (Example 11); anything else is carried through to the provider. |
+| `content-type` | `json` makes the block self-contained (Example 12); anything else is carried through to the provider. |
 | `header-*`, `referrer`, `user-agent` | HTTP headers used when `src` is fetched. |
 | `connection-string` | **Ignored by default** — see [Safety](#safety). |
 | `pre-render` | **Rejected by default** — see [Safety](#safety). |
@@ -428,6 +460,19 @@ Underscore forms (`connection_string`, `pre_render`, …) are accepted everywher
 `<h-embedded-template>` accepts `header-*`, `referrer` and `user-agent` too, applied when its
 URI is fetched.
 
+### Markers
+
+| Marker | Meaning |
+|---|---|
+| `{{name}}` | a value, written verbatim |
+| `{html{name}}` | a value, HTML/XML encoded (Example 10) |
+| `{url{name}}` | a value, percent-encoded |
+| `{now{fmt}}`, `{tomorrow{fmt}}`, `{yesterday{fmt}}` | a date, in the current culture |
+| `{uri{.}}` / `{uri{./}}` | the including template's folder |
+
+One close marker (`}}`) for everything; the open marker carries the meaning. That is the same
+convention `Com.H.Data.Common` and the DBToRestAPI configuration use.
+
 ### Things worth knowing
 
 - **One query per template file** — its rows repeat the whole file, so a second
@@ -435,7 +480,7 @@ URI is fetched.
 - **A query makes the whole file repeat.** Use nesting (Examples 5 and 8) to control what repeats
   and what doesn't.
 - **Zero rows renders nothing** for that file. This is distinct from *no database at all* — see
-  Example 10.
+  Example 11.
 - **Include cycles are detected** — templates that include each other fail with a clear error
   instead of hanging.
 
@@ -450,7 +495,7 @@ URI is fetched.
 | A connection per query, or custom rules | `content.RenderContent(provider, dataModel)` |
 
 A database-less overload used on a template that *does* contain a query doesn't fail — the query
-is skipped and the template renders once from your data model. See Example 10.
+is skipped and the template renders once from your data model. See Example 11.
 
 ## Safety
 

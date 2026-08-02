@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -58,6 +59,29 @@ namespace Com.H.Text.Template2
             RegexOptions.Compiled);
 
         private static readonly Lazy<HttpClient> Http = new(() => new HttpClient());
+
+        /// <summary>Transforms a value for the place in the document it is being written into.</summary>
+        internal delegate string Encoder(string value);
+
+        /// <summary>
+        /// Encoding markers. The engine writes values verbatim by default, because it does not
+        /// know whether the output is HTML, CSV or plain text — these let a template say so at
+        /// the point of use, where the answer is known.
+        /// </summary>
+        /// <remarks>
+        /// They follow the same convention as the rest of the family: the open marker carries
+        /// the meaning, <c>}}</c> closes everything. They address whatever data models are in
+        /// scope, so they are unaffected by a block's own <c>open-marker</c>.
+        /// </remarks>
+        private static readonly (Regex Regex, Encoder Encode)[] Encoders =
+        {
+            (EncoderRegex("{html{"), WebUtility.HtmlEncode),
+            (EncoderRegex("{url{"), WebUtility.UrlEncode),
+        };
+
+        private static Regex EncoderRegex(string openMarker)
+            => new(Regex.Escape(openMarker) + @"(?<param>.*?)?" + Regex.Escape("}}"),
+                   RegexOptions.Singleline | RegexOptions.Compiled);
 
         // marker patterns are supplied per model and repeat across rows; compiling each once
         // keeps the per-row cost linear
@@ -295,7 +319,7 @@ namespace Com.H.Text.Template2
             if (models.Count == 0 || string.IsNullOrEmpty(text)) return text;
 
             // resolve every candidate span against the ORIGINAL text
-            var candidates = new List<(int Start, int Length, int ModelIndex, string Name)>();
+            var candidates = new List<(int Start, int Length, int ModelIndex, string Name, Encoder? Encode)>();
             for (var i = 0; i < models.Count; i++)
             {
                 var markerRegex = MarkerRegex(models[i].MarkerPattern);
@@ -304,7 +328,19 @@ namespace Com.H.Text.Template2
                 {
                     var name = m.Groups["param"].Value;
                     if (string.IsNullOrWhiteSpace(name)) continue;
-                    candidates.Add((m.Index, m.Length, i, name));
+                    candidates.Add((m.Index, m.Length, i, name, null));
+                }
+
+                // encoding markers such as {html{name}} address the same models, so they work
+                // regardless of any custom marker syntax the block declares
+                foreach (var encoder in Encoders)
+                {
+                    foreach (var m in encoder.Regex.Matches(text).Cast<Match>())
+                    {
+                        var name = m.Groups["param"].Value;
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        candidates.Add((m.Index, m.Length, i, name, encoder.Encode));
+                    }
                 }
             }
             if (candidates.Count == 0) return text;
@@ -342,9 +378,17 @@ namespace Com.H.Text.Template2
                 if (values is not null && values.TryGetValue(c.Name, out var v)) value = v;
 
                 sb.Append(text, cursor, c.Start - cursor);
-                sb.Append(value is null
-                    ? entry.NullValue ?? ""
-                    : Convert.ToString(value, CultureInfo.CurrentCulture) ?? "");
+                if (value is null)
+                {
+                    // the null text is written by the template author, not supplied as data, so
+                    // it is emitted as-is — null-value="<em>n/a</em>" stays markup
+                    sb.Append(entry.NullValue ?? "");
+                }
+                else
+                {
+                    var rendered = Convert.ToString(value, CultureInfo.CurrentCulture) ?? "";
+                    sb.Append(c.Encode is null ? rendered : c.Encode(rendered));
+                }
                 cursor = c.Start + c.Length;
             }
             sb.Append(text, cursor, text.Length - cursor);
