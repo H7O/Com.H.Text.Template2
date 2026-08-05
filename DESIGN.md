@@ -1,205 +1,215 @@
 # Com.H.Text.Template2 — design
 
-**Date:** 2026-07-29 (glue architecture) · **2026-08-01** (native engine)
-**Status:** native engine
+**Date:** 2026-08-04
+**Status:** implemented, unpublished
 
 ## What this package is
 
-A **native templating engine**, template-file compatible with the original
-`Com.H.Text.Template` (same tags, markers, date placeholders and repeat-per-row semantics —
-pinned by `tests/LegacyParityTests.cs`, whose expected values were captured by running the
-original engine), plus the ADO.NET data provider that executes embedded queries with real SQL
-parameters.
+A templating engine with **no built-in idea of where data comes from**.
+
+It knows three things: how to fill markers, how to repeat a body per row, and how to include one
+template in another. SQL, JSON, HTTP, a cache, a queue — every one of those is a substitutable
+provider, and two happen to ship in the box.
 
 ```
-Com.H.Text.Template2
-├── TemplateEngine            the renderer (natively async)
-├── ITemplateDataProvider     how data blocks get their rows
-└── DbTemplateDataProvider    the ADO.NET implementation, via Com.H.Data.Common
+                     TemplateEngine
+        (markers, rows, includes — and nothing else)
+                           │
+      ┌────────────────────┼─────────────────────┐
+      │                    │                     │
+ITemplateDataProvider  TemplateConnection   TemplateContentResolver
+   "give me rows"         Factory             "give me template text"
+      │                "give me a           (files/http by default,
+      │                 connection"           anything you like)
+      ├── DbTemplateDataProvider     (SQL, parameterised)
+      └── JsonTemplateDataProvider   (a JSON payload)
 ```
 
-Its only dependency is `Com.H.Data.Common`. It does not reference `Com.H`; the legacy engine
-there remains untouched for the applications that already use it.
+The only dependency is `Com.H.Data.Common`.
 
-### History: this started as glue
+## History: this began as glue, and stopped being it
 
-The first (unpublished) iteration of this package was a thin adapter that fed the legacy
-engine's `dataProviders` delegate with a parameterising provider. That proved the seam, and
-its tests pinned the engine's observable behaviour — which is precisely what made a native
-reimplementation safe: the rewrite had to keep 40+ behavioural tests green. The sections
-below record the original glue-era decisions, still relevant as context.
+Originally this package was ~300 lines wiring `Com.H`'s 2016 `Com.H.Text.Template` engine to
+`Com.H.Data.Common`. That engine's extension point had always existed and had never been
+implemented; this package was the implementation.
 
-### What the native engine fixed over the legacy one
+It then became its own engine, because the wrapper inherited constraints that could not be fixed
+from outside:
 
-| Legacy behaviour | Native engine |
+| Legacy engine | Native engine |
 |---|---|
-| Synchronous only; blocked on async ADO.NET internally | natively async end-to-end, sync wrappers on top |
-| Markers interpolated into regex unescaped — `[[` silently failed, `<` threw `XmlException` | markers escaped; attributes parsed tolerantly, not as XML |
-| Second `<h-embedded-data>` silently ignored | loud `NotSupportedException` pointing at nested templates |
-| Include cycles hung / overflowed | depth guard with a clear error |
-| `queryParamsList` grow-bug (todo'd in legacy source) | immutable per-row model chains |
-| `$` in replacement values could corrupt output on netstandard2.0 | escaped |
+| synchronous throughout | natively async end to end |
+| markers interpolated into a regex **unescaped** — `[[` silently failed, `<%` threw | escaped; any characters work |
+| attributes parsed as XML, so `<` in a value threw | tolerant attribute parsing |
+| a second data block silently ignored | a loud error |
+| include cycles hung | detected at depth 32 |
+| substituted values re-scanned — template injection, SSRF, quadratic blowup | values are never re-examined |
+| `Fill` replaced markers model-by-model, so the first model consulted hid every other model's values | per-key resolution down the chain |
 
-And added, since template syntax was declared open: relative include URIs, `src` on the data
-tag (query in its own file), `content-type="json"` self-contained data blocks (REST APIs as a
-data source), and `header-*` / `referrer` / `user-agent` attributes for HTTP fetches.
+`Com.H` is no longer a dependency at all. Existing template files still work — same tags,
+markers, date placeholders, repeat-per-row semantics — pinned by `LegacyParityTests`.
 
-## Why a separate package rather than merging
+## The principle everything else follows from
 
-Three alternatives were considered and rejected:
+**SQL for logic, the template for presentation.**
 
-1. **Make `Com.H.Data.Common` depend on `Com.H`** and move `DbQueryParams` / `DbQueryResult`
-   into `Com.H`. Rejected: it puts ADO.NET code into the base package that every downstream
-   library inherits, and `Com.H.Data.Common`'s selling point is having no dependencies.
-2. **Put a `Template2` namespace inside `Com.H.Data.Common`.** Rejected: it would then need
-   the rendering engine, i.e. a dependency on `Com.H` — the same problem as (1).
-3. **Fold everything into `Com.H` and deprecate `Com.H.Data.Common`.** Rejected: at least
-   `Com.H.EF.Relational` pins `Com.H.Data.Common [10.1.0.4, 11.0.0)`, and other siblings
-   depend on it too. Deprecating it is a migration cost across several repos for no gain.
+No `if`, no `for`, no expression language. Sorting, filtering, conditional colours, running
+totals, placeholder text for nulls — SQL already does all of it, and more people can read it.
 
-The glue inverts the dependency: neither base moves, and consumers opt in.
+This is not a stylistic preference; it has been load-bearing operationally. A DBA with no
+software-development background built and ran critical automation on the 2016 engine for years,
+and two successive handovers — his, and the supporting DevOps engineer's — absorbed it easily
+because the logic was in SQL. A bespoke template DSL would have cost that.
 
-## The seam already existed
+## Decisions, and what was rejected
 
-`Com.H.Text.Template.TemplateExtensions.RenderContent` already accepts:
+### Values are data, never template syntax
+
+A substituted value is emitted verbatim and never re-examined. This is a security property, not
+an optimisation. Re-scanning meant:
+
+- a database row containing `{{apiToken}}` pulled that value out of the caller's model
+- a value containing `<h-embedded-template>` was **fetched** — an arbitrary file read / SSRF
+- 120 KB of marker-shaped row data took **63 seconds** to render
+
+All three are `SecurityTests`. The engine now locates includes in the *original* text before
+filling anything, and fills in a single left-to-right pass.
+
+### Markers resolve per key, innermost first
+
+`{{name}}` searches the current row, then enclosing rows, then the caller's model. A row value
+wins a name both have; a caller value the row lacks stays reachable.
+
+The original engine did not do this, and it produced a silent failure in production: a template
+mixing caller values with query results rendered the caller's values as empty. Verified against
+`Com.H` 10.2.0 — `Fill([outer, row])` returned `"name=Ali url="`, losing the URL entirely.
+
+This is the same per-key merge `Com.H.Data.Common`'s `ReduceToUnique` applies to query
+parameters, which is why `{{id}}` always bound correctly *inside* a query while failing in the
+body. The two halves now agree.
+
+### A dedicated marker does not fall back
+
+`{invoice{total}}` resolves **only** from the block that declared `{invoice{`. Naming a model is
+a promise about which one answered, and a fallback would quietly break it — which is precisely
+why giving an inner block its own marker was how collisions were resolved before per-key chaining
+existed.
+
+Rejected: a relative `{outer{…}}` / `{parent{…}}` form. Position-based addressing changes meaning
+when a template layer is inserted; a name chosen by the author does not.
+
+Marker sets alternate as **complete pairs**, so `{{name]]` does not match. Alternating each side
+independently would accept mismatched markers — a silent way to get a wrong answer.
+
+### No `pre-render`, no `null-value`
+
+`pre-render="true"` substituted values into SQL as text. That is the injection vector this
+package exists to remove, and its only legitimate use — interpolating an identifier — a caller
+can do before rendering. Removed outright; there is no option to turn parameterisation off.
+
+`null-value` is gone too. An unresolved marker renders as an empty string, because a report
+should not show a placeholder word to its reader. A template wanting `(none)` says so in its
+query via `coalesce`, where the meaning is known. `TemplateOptions.ThrowOnUnresolvedMarker` makes
+the silence loud in development.
+
+### Rows are materialised, not streamed
+
+`ITemplateDataProvider` returns `IReadOnlyList<dynamic>` — the type states the contract.
+
+This is required, not merely convenient. In master-detail, a parent's rows repeat the template
+while a *nested* template runs its own query on the same connection. A still-open parent reader
+would throw *"There is already an open DataReader associated with this Connection."* Streaming
+would break the defining reporting-engine pattern. A template also builds its whole document in
+memory regardless, so there is nothing to give up.
+
+### Separate providers plus a composer, not one that does everything
 
 ```csharp
-Func<TemplateMultiDataRequest, IEnumerable<dynamic>?>? dataProviders = null
+TemplateDataProviders.Compose(
+    new JsonTemplateDataProvider(),
+    new DbTemplateDataProvider(connectionFactory));
 ```
 
-That delegate **is** the extension point. The engine parses the `<h-embedded-data>` tag,
-hands the provider the raw query text plus the caller's data models, and renders whatever
-rows come back. It has no idea a database exists.
+Each provider declines what isn't its by returning null; the first real answer wins. A consumer
+can replace one half without touching the other, and a SQL-only application never carries the
+JSON logic.
 
-Its own source comments confirm the intent:
+### Content resolution returns text, not a transport
 
-> *"no pre-render data model before calling data providers (unless pre-render tag = true) as
-> data model is submitted to data providers to allow data providers implement their own sql
-> injection protection if needed"*
+Rejected: a delegate returning `HttpClient`, or one returning `HttpResponseMessage`.
 
-So the engine deliberately passes the query **un-substituted**, expecting the provider to
-parameterise. Nothing ever implemented such a provider — that is what this package is.
+The engine fetches text in three places, and the **root template has no tag** — so an
+attribute-keyed `HttpClient` factory is incoherent there. Returning *content* sidesteps that and
+subsumes more: caching, blob storage, a database, canned templates in tests, air-gapped
+environments.
 
-### The pre-existing default provider is broken
+It also removed code rather than adding it. A REST-backed data block is `src` plus whatever
+resolver you supply, so **this package contains no HTTP client of its own** — an earlier
+`HttpTemplateDataProvider` that made its own calls was deleted once it became clear `src` already
+went through the resolver.
 
-`TemplateExtensions.GetDefaultDataProcessors` uses `Assembly.Load("Com.H.EF.Relational")`
-and reflects for `Com.H.EF.Relational.QueryExtensions.GetDefaultDataProcessors`. That class
-no longer exists — `Com.H.EF.Relational` was rewritten as a thin wrapper over
-`Com.H.Data.Common` (commit `ebb2c72`) and now only contains `DbContextExtensions`. The
-reflection path therefore always throws `NotSupportedException`.
+### Occasional settings live in `TemplateOptions`
 
-This package sidesteps it entirely by passing an explicit delegate, so **no change to
-`Com.H` is required**. Deleting that dead reflection code in `Com.H` is worthwhile
-housekeeping but is not a prerequisite.
+Sixteen render overloads with a growing tail of optional parameters became unreadable at the call
+site. Every overload is now `(source, dataModel, options?, cancellationToken?)`.
 
-## SQL injection: the point of the exercise
+### The connection's owner is stated, not guessed
 
-The old templating story substituted parameter values into SQL **as text**
-(`QueryParams.NullReplacement = "null"`, `ReplaceQueryParameterMarkers` doing plain
-`string.Replace`). That is injection-prone by construction.
-
-This package never does textual substitution into SQL. Every query goes through
-`Com.H.Data.Common`'s `ExecuteQuery`, which turns `{{marker}}` occurrences into real
-`DbParameter` objects. Safety is structural, not a matter of remembering to escape.
-
-Consequently `NullReplacement` is intentionally **not** mapped — a null becomes a genuine
-`DBNull` parameter rather than the literal text `null`.
-
-### `pre-render="true"`
-
-A template can set `pre-render="true"` on its data tag, which asks the provider to
-substitute values into the query text before execution — reintroducing exactly the injection
-risk this package exists to remove.
-
-**Default: rejected with a clear exception.** It can be enabled explicitly
-(`allowPreRender: true`) because substituting an identifier — a table or column name — cannot
-be done with parameters and is a legitimate if sharp-edged need.
+`TemplateConnection(connection, disposeWhenDone)`. A factory may hand back one long-lived
+connection for every block or open a fresh one each time, and the engine cannot tell. Saying so
+explicitly avoids both leaking and closing a connection the caller still holds.
 
 ### Templates do not choose the database
 
-The engine surfaces a `connection-string` attribute from the template. By default this
-package **ignores** it: a template is data, and data should not be able to point the
-application at an arbitrary database. Callers who want that behaviour can opt in by
-supplying a connection factory and reading the attribute themselves.
+A template's `connection-string` attribute is ignored. A template is data, and data should not
+point the application at an arbitrary database. Since the connection now comes from a factory,
+this is structural rather than a policy the engine could be talked out of.
 
-## Mapping between the two parameter models
+Production templates did carry connection strings — with passwords, in plaintext, in files that
+get deployed. Honouring them is opt-in: read the attribute in your own factory.
 
-| `Com.H.Data.QueryParams` | `Com.H.Data.Common.DbQueryParams` |
-|---|---|
-| `DataModel` | `DataModel` — passed through unchanged |
-| `OpenMarker` / `CloseMarker` | folded into `QueryParamsRegex` via `Regex.Escape` |
-| `NullReplacement` | **deliberately dropped** — see above |
+### One data block per file
 
-## Result materialisation
-
-`ExecuteQuery` returns a lazy `DbQueryResult<dynamic>` holding an open `DbDataReader`. The
-engine's delegate signature returns `IEnumerable<dynamic>?` and gives the provider no
-opportunity to dispose afterwards, so rows are materialised before returning and the reader
-is closed deterministically.
-
-This costs streaming, which a template engine cannot exploit anyway — it builds the whole
-document in memory. The alternative leaks readers.
+A second `<h-embedded-data>` is an error. The legacy engine silently ignored it while still
+rendering its markup from the first block's rows — confusing and undiagnosable. Because a block
+repeats the whole file, composing several queries means one file each, which is also how a
+section is scoped and how it collapses on zero rows.
 
 ## Evidence from production usage
 
-Surveyed `NDReportingEngine` 2019 (net5.0) and 2022 (net7.0) — both in production, serving
-hundreds of reports daily. They are the only known real-world consumers of the templating
-engine, and they confirm the design decisions above rather than contradicting them.
+Surveyed `NDReportingEngine` 2019 and 2022 — both deployed, serving hundreds of reports daily —
+and one live trial in an HTML-email project. Findings that shaped the above:
 
-**`connection-string` is a tag attribute, set per data block inside the template file:**
+- **Both apps hand-rolled the provider**, identically, and both routed `PreRender` through
+  `DataExtensions.Fill`: textual substitution into SQL, with a live template interpolating
+  `{{name}}` *inside a quoted SQL literal*.
+- **Neither used the legacy engine's default provider.** Its
+  `Assembly.Load("Com.H.EF.Relational")` reflection targets a class that no longer exists, so it
+  always throws.
+- **`connection-string` is a tag attribute**, set per block, credentials included.
+- **Markers may be asymmetric** — `open-marker="{v1{"` with the close left at `}}`.
+- **The trial project hit the model-shadowing bug**, worked around it by selecting a caller value
+  into the query, and reported it. That workaround is no longer needed.
+- **The trial project also had no HTML escaping available** and was about to add a SQL
+  `fn_HtmlEncode`. That produced `{html{…}}` and `{url{…}}`.
 
-```html
-<h-embedded-data content-type="sql"
-                 connection-string="Data Source=...;Initial Catalog=...;User ID=...;Password=..."
-                 open-marker="{v1{"
-                 null-value="null-v1"
-                 pre-render="true">
-  <![CDATA[ declare @name nvarchar(50) = '{{name}}'; select ... ]]>
-</h-embedded-data>
-```
+## Deliberate divergences from the legacy engine
 
-Each block therefore names its own database, credentials included, in plaintext, in a file
-that is deployed. That is a further argument for this package ignoring the attribute by
-default rather than merely a stylistic one.
+Both replace behaviour that was a defect rather than a contract, and both are documented in
+`LegacyParityTests`:
 
-**Both apps implement the provider delegate themselves,** and identically:
+1. **Per-key model resolution** instead of whole-model shadowing.
+2. **Unresolved markers collapse to empty** instead of emitting the word `null`.
 
-```csharp
-public IEnumerable<dynamic>? GetDataProviders(TemplateMultiDataRequest req)
-{
-    var dc = new DbContext(new DbContextOptionsBuilder<DbContext>()
-        .UseSqlServer(req.ConnectionString).Options);
-
-    if (req.PreRender) req.Request = req.Request.Fill(req.QueryParamsList);   // <-- textual
-    return dc.ExecuteQuery(req.Request, req.QueryParamsList);                 // <-- parameterised
-}
-```
-
-This settles the SQL injection question. `PreRender` routes through `DataExtensions.Fill`,
-which is regex text replacement — and the specimen template above interpolates `{{name}}`
-*inside a quoted SQL literal*. Note the non-pre-render path was already correct; only
-`pre-render="true"` is unsafe. Rejecting it by default is therefore both the safe choice and
-a narrow one.
-
-Scope of that risk in those apps: parameter values come from scheduler task vars, i.e.
-operator-authored config (and, via the SQL value provider, from database content) — not from
-end-user input. Bounded, but the mechanism is unsafe the moment any parameter becomes
-externally influenced.
-
-**Neither app relies on `GetDefaultDataProcessors`.** Every `RenderContent` call site passes
-an explicit provider, so the `Assembly.Load("Com.H.EF.Relational")` reflection is never
-reached. It is dead for these two consumers — though a 2016-era deployment was not available
-to check, which is the reason to leave it in place.
-
-**Asymmetric markers are real.** Production templates set `open-marker="{v1{"` and leave the
-close marker at its default, yielding `{v1{name}}`. `BuildMarkerRegex` escapes and defaults
-each marker independently, which handles this; there are now tests pinning that behaviour.
+Everything else — tags, marker syntax, date placeholders, repeat-per-row, zero-rows-collapses,
+`{uri{.}}` resolution, case-insensitive names, current-culture formatting — is unchanged, with
+expected values captured by running the original engine.
 
 ## Open items
 
-- Delete the dead `GetDefaultDataProcessors` reflection in `Com.H` (housekeeping; not blocking).
-- `TemplateMultiDataRequest` still carries `ConnectionString` / `ContentType` / `PreRender`,
-  which the engine's own `// todo` marks for removal. Doing so is a breaking change to
-  `Com.H` and is deliberately deferred.
-- Async rendering: the engine's `RenderContent` is synchronous, so the provider must be too.
-  A genuinely async path needs an engine-side change.
+- `DbTemplateDataProvider` opens a connection it was handed if it is closed, but only disposes
+  what a factory marked `Owned`. Worth confirming that suits pooled connections under load.
+- No provider ships for CSV or XML payloads. `JsonTemplateDataProvider` is the shape to copy.
+- Rendering is async throughout, but providers materialise. A very large result set is held
+  entirely in memory; that is inherent to repeat-per-row rendering rather than a defect, but it
+  bounds the sensible result size.
