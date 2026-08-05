@@ -122,6 +122,41 @@ var output = template.RenderContent(connection, new { category = "Accessories" }
 Any ADO.NET database works — SQL Server, PostgreSQL, MySQL, SQLite, Oracle, ODBC, OleDb. The
 connection is yours to open and dispose; this package never closes a connection you supplied.
 
+### Mixing caller values with query results
+
+A very common case: some values come from your code, the rest from the query. Both work in the
+same template, and **a caller value stays reachable inside the data block**:
+
+```csharp
+var template = """
+    <h-embedded-data null-value=""><![CDATA[
+        select english_name from insider where id = {{ref_id}}
+    ]]></h-embedded-data>
+    <b>{{english_name}}</b><a href="{{record_url}}">Review</a>
+    """;
+
+template.RenderContent(connection, new { ref_id = 7, record_url = "https://app/record/7" });
+// <b>Ali</b><a href="https://app/record/7">Review</a>
+```
+
+`{{ref_id}}` binds as a SQL parameter, `{{english_name}}` comes from the row, and
+`{{record_url}}` — which the query never selected — comes from your data model.
+
+Markers resolve **per key, innermost first**:
+
+1. the current row, if it has that column
+2. then the enclosing template's row, and so on outward
+3. then the data model you passed
+4. only if *nothing* has the key does `null-value` apply
+
+So a row value wins a name both have, and a caller value the row doesn't have is still visible.
+This is the same rule `Com.H.Data.Common` applies to query parameters.
+
+> The original `Com.H.Text.Template` engine did **not** do this for the body — the row silently
+> overwrote every caller value it lacked. If you are porting templates that worked around it (for
+> example by selecting a caller value into the query just to reach it), that workaround is no
+> longer needed.
+
 ## Example 4 — Keeping the query in the template file
 
 The query does not have to live in your C# source. Put it in the template file, and the file

@@ -365,17 +365,36 @@ namespace Com.H.Text.Template2
                 if (c.Start < cursor) continue; // overlaps an already-emitted substitution
 
                 var entry = models[c.ModelIndex];
-                if (!resolved[c.ModelIndex])
-                {
-                    valuesByModel[c.ModelIndex] = entry.Model is null
-                        ? null
-                        : DataExtensions.GetDataModelParameters(entry.Model);
-                    resolved[c.ModelIndex] = true;
-                }
 
+                // Resolve the NAME down the model chain, innermost first: a row value wins over
+                // a caller value of the same name, but a caller value the row doesn't have stays
+                // reachable. Only when NO model in scope has the key does the null text apply.
+                //
+                // This mirrors how Com.H.Data.Common merges DbQueryParams (ReduceToUnique), which
+                // is why {{ref_id}} always bound correctly inside a query. The original engine did
+                // NOT do this for the body: it replaced markers model-by-model with a global
+                // string replace, so the first model consulted overwrote every marker it lacked
+                // with its own null text and hid every outer value. That made the ordinary
+                // "some values from the caller, the rest from a query" case fail silently.
                 object? value = null;
-                var values = valuesByModel[c.ModelIndex];
-                if (values is not null && values.TryGetValue(c.Name, out var v)) value = v;
+                for (var i = c.ModelIndex; i >= 0; i--)
+                {
+                    if (!resolved[i])
+                    {
+                        var model = models[i].Model;
+                        valuesByModel[i] = model is null
+                            ? null
+                            : DataExtensions.GetDataModelParameters(model);
+                        resolved[i] = true;
+                    }
+
+                    var values = valuesByModel[i];
+                    if (values is not null && values.TryGetValue(c.Name, out var v) && v is not null)
+                    {
+                        value = v;
+                        break;
+                    }
+                }
 
                 sb.Append(text, cursor, c.Start - cursor);
                 if (value is null)

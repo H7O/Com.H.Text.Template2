@@ -8,6 +8,14 @@ namespace Com.H.Text.Template2.Tests;
 /// value here was captured by running the ORIGINAL engine before this package's native engine
 /// replaced it — these tests are the compatibility contract for existing template files.
 /// </summary>
+/// <remarks>
+/// There is exactly one <b>deliberate</b> divergence, covered by <c>ModelChainTests</c>: marker
+/// resolution now walks the model chain per key, so a caller value the current row lacks stays
+/// reachable. The original overwrote it with the row's null text. That was a defect — verified
+/// against Com.H 10.2.0, where rendering with [outer, row] silently dropped the caller's value —
+/// and it made the ordinary "some values from the caller, the rest from a query" case fail
+/// invisibly. Collision priority is unchanged: the row still wins a key both models have.
+/// </remarks>
 public class LegacyParityTests : IDisposable
 {
     private readonly SqliteConnection _conn;
