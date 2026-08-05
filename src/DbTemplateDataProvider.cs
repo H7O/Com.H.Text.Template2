@@ -61,7 +61,7 @@ namespace Com.H.Text.Template2
         }
 
         /// <inheritdoc/>
-        public async ValueTask<IEnumerable<dynamic>?> GetDataAsync(
+        public async ValueTask<IReadOnlyList<dynamic>?> GetDataAsync(
             TemplateDataRequest request, CancellationToken cancellationToken = default)
         {
             if (request is null || string.IsNullOrWhiteSpace(request.Query)) return null;

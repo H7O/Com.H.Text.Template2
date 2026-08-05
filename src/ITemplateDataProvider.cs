@@ -25,7 +25,7 @@ namespace Com.H.Text.Template2
         /// Rows must be fully materialised before returning; the engine gives the provider no
         /// later opportunity to dispose a reader.
         /// </returns>
-        ValueTask<IEnumerable<dynamic>?> GetDataAsync(
+        ValueTask<IReadOnlyList<dynamic>?> GetDataAsync(
             TemplateDataRequest request,
             CancellationToken cancellationToken = default);
     }

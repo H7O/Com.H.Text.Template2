@@ -44,6 +44,42 @@ public class DocumentationExamplesTests : IDisposable
         return path;
     }
 
+    // ---------------------------------------------------------------- Example 10
+    [Fact]
+    public void Example10_GenericAndDedicatedMarkers()
+    {
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = """
+            create table invoice (id integer, total real);
+            create table invoice_line (invoice_id integer, description text, total real);
+            insert into invoice values (1, 240.0);
+            insert into invoice_line values (1, 'Keyboard', 25.0);
+            insert into invoice_line values (1, 'Monitor', 199.0);
+            """;
+        cmd.ExecuteNonQuery();
+
+        Write("lines.html",
+            "<h-embedded-data><![CDATA["
+            + "select description, total from invoice_line where invoice_id = {{id}} order by description"
+            + "]]></h-embedded-data>"
+            + "<tr><td>{{description}}</td><td>{{total}}</td><td>{invoice{total}}</td></tr>");
+
+        var index = Write("index.html",
+            "<h-embedded-data marker=\"{invoice{\"><![CDATA["
+            + "select id, total from invoice where id = {{invoice_id}}"
+            + "]]></h-embedded-data>"
+            + "<h-embedded-template><![CDATA[{uri{.}}/lines.html]]></h-embedded-template>");
+
+        var output = new Uri(index).RenderContent(_connection, new { invoice_id = 1 });
+
+        // {{total}} takes the nearest model (the line); {invoice{total}} reaches past it to the
+        // block that declared the marker, even though the line also has a 'total' column
+        Assert.Equal(
+            "<tr><td>Keyboard</td><td>25</td><td>240</td></tr>"
+            + "<tr><td>Monitor</td><td>199</td><td>240</td></tr>",
+            output);
+    }
+
     // ---------------------------------------------------------------- Example 1
     [Fact]
     public void Example1_FillingInValues()

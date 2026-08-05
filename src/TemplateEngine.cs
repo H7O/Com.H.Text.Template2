@@ -4,9 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -58,7 +56,6 @@ namespace Com.H.Text.Template2
             @"(?<name>[A-Za-z_][\w\-]*)\s*=\s*""(?<value>[^""]*)""",
             RegexOptions.Compiled);
 
-        private static readonly Lazy<HttpClient> Http = new(() => new HttpClient());
 
         /// <summary>Transforms a value for the place in the document it is being written into.</summary>
         internal delegate string Encoder(string value);
@@ -98,6 +95,59 @@ namespace Com.H.Text.Template2
         {
             get => ThrowOnUnresolved.Value;
             set => ThrowOnUnresolved.Value = value;
+        }
+
+        /// <summary>Ambient for the same reason as <see cref="ThrowOnUnresolvedMarker"/>.</summary>
+        private static readonly AsyncLocal<TemplateContentResolver?> Resolver = new();
+
+        internal static TemplateContentResolver? ContentResolver
+        {
+            get => Resolver.Value;
+            set => Resolver.Value = value;
+        }
+
+        /// <summary>
+        /// Asks for a template's text. The engine has no idea whether that means a file, an HTTP
+        /// call, a cache or a database — only the resolver does.
+        /// </summary>
+        internal static ValueTask<string?> ResolveContentAsync(
+            Uri uri, Dictionary<string, string?> attributes, CancellationToken ct)
+            => (ContentResolver ?? TemplateContent.FetchAsync)(uri, attributes, ct);
+
+        /// <summary>
+        /// Builds the attribute set handed to a content resolver: the tag's own attributes,
+        /// marker-filled, with the ambient referrer / user-agent as fallbacks.
+        /// </summary>
+        private static Dictionary<string, string?> ContentAttributes(
+            Dictionary<string, string?> attrs,
+            List<DbQueryParams> models,
+            string? referrer,
+            string? userAgent)
+        {
+            var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in attrs)
+            {
+                if (kv.Key.StartsWith(OriginalNameKey, StringComparison.Ordinal)) continue;
+                result[kv.Key] = FillAttr(kv.Value, models);
+            }
+
+            if (!result.ContainsKey("referrer") && !string.IsNullOrWhiteSpace(referrer))
+                result["referrer"] = referrer;
+            if (!result.ContainsKey("user-agent") && !string.IsNullOrWhiteSpace(userAgent))
+                result["user-agent"] = userAgent;
+
+            // header names are case- and underscore-significant on the wire
+            foreach (var kv in attrs)
+            {
+                if (!kv.Key.StartsWith("header-", StringComparison.OrdinalIgnoreCase)) continue;
+                var written = OriginalHeaderName(attrs, kv.Key);
+                if (!string.Equals(written, kv.Key, StringComparison.Ordinal))
+                {
+                    result.Remove(kv.Key);
+                    result[written] = FillAttr(kv.Value, models);
+                }
+            }
+            return result;
         }
 
         // marker patterns are supplied per model and repeat across rows; compiling each once
@@ -173,25 +223,20 @@ namespace Com.H.Text.Template2
             if (string.IsNullOrWhiteSpace(query) && !string.IsNullOrWhiteSpace(src))
             {
                 var srcUri = ResolveUri(src!, parentUri, models);
-                query = await FetchAsync(
-                    srcUri,
-                    FillAttr(GetAttr(attrs, "referrer"), models) ?? referrer,
-                    FillAttr(GetAttr(attrs, "user-agent"), models) ?? userAgent,
-                    CollectHeaders(attrs, models), ct).ConfigureAwait(false);
+                query = await ResolveContentAsync(
+                    srcUri, ContentAttributes(attrs, models, referrer, userAgent), ct)
+                    .ConfigureAwait(false);
             }
 
             var body = content.Remove(tag.Index, tag.Length);
 
-            IEnumerable<dynamic>? rows;
+            // The engine has no idea what a data source is. SQL, REST, a queue, a file — every
+            // one of those is a provider's business, selected by whatever attributes that
+            // provider chooses to honour.
+            IReadOnlyList<dynamic>? rows;
             if (string.IsNullOrWhiteSpace(query))
             {
                 rows = null;
-            }
-            else if (string.Equals(contentType, "json", StringComparison.OrdinalIgnoreCase))
-            {
-                // the block's content IS the data: a JSON array (or single object) fetched from
-                // a REST API via src, or embedded directly — no database and no provider involved
-                rows = ParseJsonRows(query!);
             }
             else if (provider is not null)
             {
@@ -293,8 +338,8 @@ namespace Com.H.Text.Template2
             var subUserAgent = FillAttr(GetAttr(attrs, "user-agent"), models) ?? userAgent;
 
             var uri = ResolveUri(uriText, parentUri, models);
-            var fetched = await FetchAsync(
-                uri, subReferrer, subUserAgent, CollectHeaders(attrs, models), ct)
+            var fetched = await ResolveContentAsync(
+                uri, ContentAttributes(attrs, models, referrer, userAgent), ct)
                 .ConfigureAwait(false);
 
             return await RenderAsync(
@@ -518,39 +563,6 @@ namespace Com.H.Text.Template2
             => string.IsNullOrEmpty(value) ? value : FillModels(value!, models);
 
         /// <summary>
-        /// Collects <c>header-*</c> attributes as HTTP headers for URI fetches, marker-filled so
-        /// values such as <c>Bearer {{token}}</c> work.
-        /// </summary>
-        /// <remarks>
-        /// Names keep their underscores — <c>header-X_Trace</c> sends <c>X_Trace</c> — and any
-        /// value containing CR or LF is rejected rather than sent, since a marker-filled value is
-        /// runtime data and could otherwise split the request.
-        /// </remarks>
-        internal static Dictionary<string, string> CollectHeaders(
-            Dictionary<string, string?> attrs, List<DbQueryParams> models)
-        {
-            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kv in attrs)
-            {
-                if (!kv.Key.StartsWith("header-", StringComparison.OrdinalIgnoreCase)
-                    || kv.Key.Length <= 7
-                    || kv.Value is null) continue;
-
-                var name = OriginalHeaderName(attrs, kv.Key).Substring(7);
-                var value = FillAttr(kv.Value, models) ?? "";
-
-                if (value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0)
-                    throw new FormatException(
-                        $"The value for header '{name}' contains a line break after marker "
-                        + "substitution, which would split the HTTP request. Header values cannot "
-                        + "contain CR or LF.");
-
-                headers[name] = value;
-            }
-            return headers;
-        }
-
-        /// <summary>
         /// Recovers a header attribute's name as written. Attribute keys are normalised so that
         /// <c>connection_string</c> and <c>connection-string</c> are one key, but an HTTP header
         /// name is case- and underscore-significant, so the original spelling is preserved.
@@ -587,81 +599,10 @@ namespace Com.H.Text.Template2
             throw new FormatException($"Invalid template uri: {uriText}");
         }
 
-        internal static async Task<string> FetchAsync(
-            Uri uri,
-            string? referrer,
-            string? userAgent,
-            Dictionary<string, string> headers,
-            CancellationToken ct)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            if (uri.IsFile)
-            {
-                using var reader = new StreamReader(uri.LocalPath);
-                return await reader.ReadToEndAsync().ConfigureAwait(false);
-            }
-
-            if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-                if (!string.IsNullOrWhiteSpace(referrer)
-                    && Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri))
-                    request.Headers.Referrer = referrerUri;
-                if (!string.IsNullOrWhiteSpace(userAgent))
-                    request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
-                foreach (var kv in headers)
-                {
-                    if (request.Headers.TryAddWithoutValidation(kv.Key, kv.Value)) continue;
-
-                    // Content-Type and friends are content headers, which HttpRequestHeaders
-                    // rejects. A GET has no body to hang them on, so attach an empty one rather
-                    // than dropping the header silently — the previous behaviour discarded this
-                    // return value, and the caller never learned the header had not been sent.
-                    request.Content ??= new ByteArrayContent(Array.Empty<byte>());
-                    if (!request.Content.Headers.TryAddWithoutValidation(kv.Key, kv.Value))
-                        throw new FormatException(
-                            $"Header '{kv.Key}' could not be added to the template fetch request. "
-                            + "Check the header name and value.");
-                }
-
-                using var response = await Http.Value.SendAsync(request, ct).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            }
-
-            throw new NotSupportedException(
-                $"Unsupported template uri scheme '{uri.Scheme}' for {uri}. "
-                + "Supported: file, http, https.");
-        }
 
         private static string AppendSlash(string path)
             => path.EndsWith("/", StringComparison.Ordinal)
                || path.EndsWith("\\", StringComparison.Ordinal)
                 ? path
-                : path + Path.DirectorySeparatorChar;
-
-        // ------------------------------------------------------------------ json data blocks
-
-        /// <summary>
-        /// Turns a <c>content-type="json"</c> block's content into rows: array elements each
-        /// become a row; a single object becomes one row.
-        /// </summary>
-        internal static List<dynamic> ParseJsonRows(string json)
-        {
-            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
-            var rows = new List<dynamic>();
-
-            if (doc.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var element in doc.RootElement.EnumerateArray())
-                    rows.Add(element.Clone());
-            }
-            else
-            {
-                rows.Add(doc.RootElement.Clone());
-            }
-            return rows;
-        }
-    }
+                : path + Path.DirectorySeparatorChar;    }
 }

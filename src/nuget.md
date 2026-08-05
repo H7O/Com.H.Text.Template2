@@ -1,6 +1,7 @@
 # Com.H.Text.Template2
 
-A small, natively async templating engine for .NET that can run **SQL queries embedded in the template itself** — or fetch its rows from a REST API.
+A small, natively async templating engine for .NET that can run **SQL queries embedded in the
+template itself**.
 
 Output any text format — HTML, XML, CSV, JSON, plain text. There is no template language to
 learn: values are `{{markers}}`, and anything that needs *logic* is written in SQL, where you
@@ -25,7 +26,7 @@ var template = """
     <li>{{name}} - {{price}}</li>
     """;
 
-var output = template.RenderContent(connection, new { category = "Accessories" });
+var output = await template.RenderContentAsync(connection, new { category = "Accessories" });
 
 // <li>Keyboard - 25</li>
 // <li>Mouse - 15</li>
@@ -54,8 +55,6 @@ can maintain the templates.
 The simplest use needs no database at all.
 
 ```csharp
-using Com.H.Text.Template2;
-
 var output = "Hello {{name}}, you have {{count}} new messages."
     .RenderContent(new { name = "Ali", count = 3 });
 ```
@@ -71,10 +70,10 @@ There are also built-in date markers, which need no data model:
 
 ```csharp
 "Report generated {now{yyyy-MM-dd}}".RenderContent(new { });
-// Report generated 2026-08-01
 ```
 
-`{now{…}}`, `{tomorrow{…}}` and `{yesterday{…}}` all accept standard .NET date format strings.
+`{now{…}}`, `{tomorrow{…}}` and `{yesterday{…}}` accept standard .NET date format strings and
+render in the current culture.
 
 ## Example 2 — A template from a file
 
@@ -88,16 +87,17 @@ var output = new Uri(@"C:\templates\greeting.txt").RenderContent(new { name = "A
 Hello Ali, welcome back.
 ```
 
-`http://` and `https://` URLs work too, with optional `referrer` and `userAgent` arguments.
+`http://` and `https://` URLs work too — and anything else you like, via
+[a content resolver](#loading-templates-from-anywhere).
 
 ## Example 3 — Adding a database query
 
 Wrap a query in `<h-embedded-data>`. Everything else in the template becomes the **body**, which
-is rendered once per returned row, with `{{column}}` markers filled from that row.
+renders once per returned row, with `{{column}}` markers filled from that row.
 
 ```csharp
 using Com.H.Data.Common;    // CreateDbConnection
-using Com.H.Text.Template2; // RenderContent
+using Com.H.Text.Template2; // RenderContentAsync
 
 using var connection = connectionString.CreateDbConnection("Microsoft.Data.SqlClient");
 
@@ -108,7 +108,7 @@ var template = """
     <li>{{name}} - {{price}}</li>
     """;
 
-var output = template.RenderContent(connection, new { category = "Accessories" });
+var output = await template.RenderContentAsync(connection, new { category = "Accessories" });
 ```
 
 ```html
@@ -120,7 +120,10 @@ var output = template.RenderContent(connection, new { category = "Accessories" }
 `{{name}}` and `{{price}}` in the *body* are filled from each row.
 
 Any ADO.NET database works — SQL Server, PostgreSQL, MySQL, SQLite, Oracle, ODBC, OleDb. The
-connection is yours to open and dispose; this package never closes a connection you supplied.
+connection is yours: the engine opens it if needed and never disposes it.
+
+Every method has a synchronous twin (`RenderContent`), but the engine is async end to end —
+prefer `RenderContentAsync` in a web application.
 
 ### Mixing caller values with query results
 
@@ -129,33 +132,29 @@ same template, and **a caller value stays reachable inside the data block**:
 
 ```csharp
 var template = """
-    <h-embedded-data null-value=""><![CDATA[
+    <h-embedded-data><![CDATA[
         select english_name from insider where id = {{ref_id}}
     ]]></h-embedded-data>
     <b>{{english_name}}</b><a href="{{record_url}}">Review</a>
     """;
 
-template.RenderContent(connection, new { ref_id = 7, record_url = "https://app/record/7" });
+await template.RenderContentAsync(connection, new { ref_id = 7, record_url = "https://app/record/7" });
 // <b>Ali</b><a href="https://app/record/7">Review</a>
 ```
-
-`{{ref_id}}` binds as a SQL parameter, `{{english_name}}` comes from the row, and
-`{{record_url}}` — which the query never selected — comes from your data model.
 
 Markers resolve **per key, innermost first**:
 
 1. the current row, if it has that column
 2. then the enclosing template's row, and so on outward
 3. then the data model you passed
-4. only if *nothing* has the key does `null-value` apply
+4. and if *nothing* has the key, the marker renders as an empty string
 
 So a row value wins a name both have, and a caller value the row doesn't have is still visible.
 This is the same rule `Com.H.Data.Common` applies to query parameters.
 
-> The original `Com.H.Text.Template` engine did **not** do this for the body — the row silently
-> overwrote every caller value it lacked. If you are porting templates that worked around it (for
-> example by selecting a caller value into the query just to reach it), that workaround is no
-> longer needed.
+> Set `TemplateOptions.ThrowOnUnresolvedMarker` in development to make step 4 loud instead of
+> silent. Leave it off in production, where an empty string beats a placeholder word in front of
+> a reader.
 
 ## Example 4 — Keeping the query in the template file
 
@@ -171,12 +170,15 @@ becomes self-contained — editable by whoever maintains the report, without a r
 ```
 
 ```csharp
-var output = new Uri(@"C:\templates\products.html")
-    .RenderContent(connection, new { category = "Displays" });
+var output = await new Uri(@"C:\templates\products.html")
+    .RenderContentAsync(connection, new { category = "Displays" });
 ```
 
+A block can also point at its query with `src`, which is resolved the same way templates are:
+
 ```html
-<li>Monitor</li>
+<h-embedded-data src="{uri{.}}/queries/products.sql"></h-embedded-data>
+<li>{{name}}</li>
 ```
 
 ## Example 5 — Building a table with nested templates
@@ -201,10 +203,6 @@ out of the repetition, put the rows in their own file and pull it in with
 <tr><td>{{name}}</td><td>{{price}}</td></tr>
 ```
 
-```csharp
-var output = new Uri(@"C:\templates\index.html").RenderContent(connection);
-```
-
 ```html
 <table><tr><th>Product</th><th>Price</th></tr>
 <tr><td>Keyboard</td><td>25</td></tr>
@@ -213,18 +211,17 @@ var output = new Uri(@"C:\templates\index.html").RenderContent(connection);
 ```
 
 `{uri{.}}` resolves to the folder of the template doing the including, so nested templates move
-with their parent. Nesting can go as deep as you like, and nested templates work without a
-database too.
+with their parent. Nesting can go as deep as you like, and a nested template's query can bind
+values from its parent's current row.
 
 ## Example 6 — Logic belongs in the query
 
-Alternating row colours, conditional formatting, running totals — decide them in SQL and let the
-template just place the value:
+Alternating row colours, conditional formatting, running totals, placeholder text for nulls —
+decide them in SQL and let the template just place the value:
 
 ```html
-<!-- rows.html -->
 <h-embedded-data><![CDATA[
-    select name,
+    select coalesce(name, '(unnamed)') as name,
            case when row_number() over (order by name) % 2 = 0
                 then '#f0f0f0' else '#ffffff' end as row_colour
     from products order by name
@@ -232,14 +229,7 @@ template just place the value:
 <tr bgcolor="{{row_colour}}"><td>{{name}}</td></tr>
 ```
 
-```html
-<tr bgcolor="#ffffff"><td>Keyboard</td></tr>
-<tr bgcolor="#f0f0f0"><td>Monitor</td></tr>
-<tr bgcolor="#ffffff"><td>Mouse</td></tr>
-```
-
-This is the whole philosophy: no template-level `if`, because SQL's `case when` is better at it
-and more people already read it.
+No template-level `if`, because SQL's `case when` is better at it and more people already read it.
 
 ## Example 7 — Parameters straight from a web request
 
@@ -248,11 +238,11 @@ nothing to escape and no injection risk:
 
 ```csharp
 [HttpGet("catalogue")]
-public IActionResult Catalogue([FromQuery] string category)
+public async Task<IActionResult> Catalogue([FromQuery] string category, CancellationToken ct)
 {
     using var connection = _connectionString.CreateDbConnection("Microsoft.Data.SqlClient");
 
-    var html = _template.RenderContent(connection, new { category });
+    var html = await _template.RenderContentAsync(connection, new { category }, cancellationToken: ct);
 
     return Content(html ?? "", "text/html");
 }
@@ -260,85 +250,29 @@ public IActionResult Catalogue([FromQuery] string category)
 
 | `category` value | Result |
 |---|---|
-| `Accessories` | the two matching rows |
+| `Accessories` | the matching rows |
 | `Accessories' OR '1'='1` | **no rows** — treated as a category name nobody has |
 | `x'; delete from products; --` | **no rows**, and the table is untouched |
 
-The payloads are indistinguishable from any other value that happens to match nothing, which is
-exactly what a bound parameter does.
-
-> The one exception is `pre-render="true"`, which asks for values to be pasted into the query as
-> text. It is **rejected by default** for this reason — see [Safety](#safety).
+The payloads are indistinguishable from any other value that matches nothing, which is exactly
+what a bound parameter does. There is no way to ask for textual substitution instead.
 
 ## Example 8 — Sections that disappear when there is no data
 
 Because a template with a query repeats per row, **zero rows means it renders as nothing**. Put
 the query in a nested template and the surrounding page survives while that section collapses:
 
-```html
-<!-- index.html -->
-<h1>Catalogue</h1>
-<ul><h-embedded-template><![CDATA[{uri{.}}/offers.html]]></h-embedded-template></ul>
-<footer>end</footer>
-```
-
-```html
-<!-- offers.html -->
-<h-embedded-data><![CDATA[
-    select name from products where category = {{category}}
-]]></h-embedded-data>
-<li>{{name}}</li>
-```
-
 ```csharp
-new Uri(index).RenderContent(connection, new { category = "Displays" });
+await new Uri(index).RenderContentAsync(connection, new { category = "Displays" });
 // <h1>Catalogue</h1><ul><li>Monitor</li></ul><footer>end</footer>
 
-new Uri(index).RenderContent(connection, new { category = "Nonexistent" });
+await new Uri(index).RenderContentAsync(connection, new { category = "Nonexistent" });
 // <h1>Catalogue</h1><ul></ul><footer>end</footer>
 ```
 
 No conditional syntax needed — an empty result set is its own "hide this".
 
-## Example 9 — Changing the marker syntax
-
-`{{ }}` can collide with the output format — CSS blocks, JSON, Handlebars-style content. Set a
-different marker on the data tag:
-
-```html
-<h-embedded-data open-marker="{v1{"><![CDATA[
-    select name from products where category = {{category}} order by name
-]]></h-embedded-data>
-<span style="color:{red}">{v1{name}}</span>
-```
-
-```html
-<span style="color:{red}">Monitor</span>
-```
-
-The body now uses `{v1{name}}`, so the CSS braces are left alone. Note the **query** still uses
-`{{ }}` — the marker attributes apply to the body only.
-
-Attributes: `open-marker`, `close-marker` (defaults to `}}`), `null-value`.
-
-The convention across Com.H libraries is **one close marker (`}}`) for everything, with the open
-marker carrying the meaning**, and `{{name}}` always accepted as the generic form. So setting
-`open-marker="{v1{"` above means the body accepts *both* `{v1{name}}` and `{{name}}`.
-
-Any characters work — they are escaped before use — and `close-marker` is only needed if you
-want something other than `}}`.
-
-For full control, `marker-pattern` takes a regex directly:
-
-```html
-<h-embedded-data marker-pattern="(?&lt;open_marker&gt;\{\{|\{row\{)(?&lt;param&gt;.*?)?(?&lt;close_marker&gt;\}\})">
-```
-
-It must define the named groups `open_marker`, `param` and `close_marker` — deliberately the
-same shape as `Com.H.Data.Common`'s `DbQueryParams.QueryParamsRegex`, so a template's markers
-address query parameters with no translation in between.
-
-## Example 10 — Escaping values for HTML
+## Example 9 — Escaping values for HTML
 
 The engine writes values **verbatim**, because it does not know whether you are producing HTML,
 CSV, JSON or plain text. For HTML that matters: a company called `Smith & Sons <Holdings>` would
@@ -353,118 +287,152 @@ Say what you mean at the point of use:
 
 | Marker | Encoding |
 |---|---|
-| `{{name}}` | none — the value is written exactly as it is |
+| `{{name}}` | none — written exactly as it is |
 | `{html{name}}` | HTML/XML text and quoted attribute values |
 | `{url{name}}` | percent-encoding, for URLs and query strings |
 
-`{html{…}}` also escapes `"` and `'`, so a **quoted** attribute is safe:
+`{html{…}}` also escapes `"` and `'`, so a **quoted** attribute is safe. An encoded value is
+still never re-scanned as template syntax.
+
+## Example 10 — Generic and dedicated markers
+
+`{{name}}` searches the whole model chain. When you need certainty about *which* model answered,
+give a block its own marker:
 
 ```html
-<td title="{html{note}}">…</td>
+<h-embedded-data marker="{invoice{"><![CDATA[
+    select id, total from invoice where id = {{invoice_id}}
+]]></h-embedded-data>
+
+<h-embedded-template><![CDATA[{uri{.}}/lines.html]]></h-embedded-template>
 ```
 
-Encoding markers address whatever data is in scope, so they work regardless of a block's own
-`open-marker` — and, like every marker, an encoded value is still never re-scanned as template
-syntax.
+```html
+<!-- lines.html — its own rows also have a 'total' column -->
+<h-embedded-data><![CDATA[select description, total from invoice_line where invoice_id = {{id}}]]>
+</h-embedded-data>
+<tr><td>{{description}}</td><td>{{total}}</td><td>{invoice{total}}</td></tr>
+```
 
-The `null-value` text is **not** encoded: you wrote it, so `null-value="<em>n/a</em>"` stays
-markup rather than becoming visible tags.
+- `{{total}}` — the nearest model with a `total`, i.e. the line
+- `{invoice{total}}` — **only** the block that declared `{invoice{`, whatever else is in scope
+
+A dedicated marker never falls back, which is precisely the guarantee it exists to give. A block
+declaring one still accepts `{{name}}` too, so you only reach for it where it matters.
+
+`close-marker` is optional and defaults to `}}`; supply it when a symmetric pair reads better:
+
+```html
+<h-embedded-data marker="[[" close-marker="]]">
+```
+
+For full control, `marker-pattern` takes a regex with named groups `open_marker`, `param` and
+`close_marker` — deliberately the same shape as `Com.H.Data.Common`'s
+`DbQueryParams.QueryParamsRegex`, so a template's markers address query parameters with no
+translation in between. It is validated on use, so a mistake is reported rather than silently
+matching nothing.
 
 ## Example 11 — One template, with or without a database
 
-A template that contains a query can still be rendered without one. The query is skipped and the
-template renders **once**, with `{{markers}}` filled from the data model you passed:
+A template containing a query can still render without one. The query is skipped and the template
+renders **once**, from the data model you passed:
 
 ```csharp
-var template = """
-    <h-embedded-data><![CDATA[
-        select name from products where category = {{category}} order by name
-    ]]></h-embedded-data>
-    <li>{{name}}</li>
-    """;
-
-template.RenderContent(connection, new { category = "Accessories" });
+await template.RenderContentAsync(connection, new { category = "Accessories" });
 // <li>Keyboard</li><li>Mouse</li>
 
 template.RenderContent(new { name = "Placeholder" });
 // <li>Placeholder</li>
 ```
 
-This is useful for previewing a layout, rendering a design-time placeholder, or reusing one
-template in a context that has no database.
-
-Note the difference from Example 8:
+Useful for previewing a layout or a design-time placeholder. Note the difference from Example 8:
 
 | Situation | Result |
 |---|---|
-| No database supplied | Query skipped; template renders **once** from your data model |
-| Query ran and matched nothing | Template renders as **nothing** (the section collapses) |
+| No data source supplied | query skipped; template renders **once** from your model |
+| Query ran and matched nothing | template renders as **nothing** |
 
-"There is no data source" and "the query found nothing" are deliberately different answers.
+Set `TemplateOptions.ThrowIfQueryPresent` for templates that must never render without their data.
 
-For templates that must **never** render without their data, opt into strict mode — it throws
-instead of skipping:
+---
 
-```csharp
-template.RenderContent(dataModel, throwIfQueryPresent: true);
-```
+## Choosing where data comes from
 
-## Example 12 — Data from a REST API, no database at all
+The engine knows about templates, markers and rows. It knows nothing about SQL, JSON, HTTP or
+anything else — every source is an `ITemplateDataProvider`, and two ship in the box.
 
-With `content-type="json"`, the block's content **is** the data — a JSON array whose elements
-become the rows. Point `src` at an API and the template becomes HTTP-driven:
+| You have | Call |
+|---|---|
+| Values only | `content.RenderContentAsync(dataModel)` |
+| One connection for everything | `content.RenderContentAsync(connection, dataModel)` |
+| A connection per block | `content.RenderContentAsync(connectionFactory, dataModel)` |
+| Anything else | `content.RenderContentAsync(provider, dataModel)` |
 
-```html
-<h-embedded-data content-type="json"
-                 src="https://api.example.com/products?category={{category}}"
-                 header-Authorization="Bearer {{token}}">
-</h-embedded-data>
-<li>{{name}} ({{city}})</li>
-```
+### A connection per block
 
-`header-*` attributes become HTTP request headers; `referrer` and `user-agent` are also
-available. The JSON can equally be embedded directly:
+The factory receives the block's attributes and decides everything — which database, on what
+terms, and who disposes the connection:
 
 ```csharp
-var template = """
-    <h-embedded-data content-type="json"><![CDATA[
-        [ {"name":"Ali","city":"Amman"}, {"name":"Sara","city":"Dubai"} ]
-    ]]></h-embedded-data>
-    <li>{{name}} ({{city}})</li>
-    """;
-
-template.RenderContent(new { });
-// <li>Ali (Amman)</li><li>Sara (Dubai)</li>
+var html = await template.RenderContentAsync(
+    (attrs, ct) =>
+    {
+        var name = attrs.TryGetValue("database", out var v) ? v : "default";
+        return new ValueTask<TemplateConnection?>(
+            TemplateConnection.Owned(_factory.Create(name)));
+    },
+    new { country = "JO" });
 ```
 
-A single JSON object renders as one row. Nested objects and arrays arrive as raw JSON text.
+```html
+<h-embedded-data database="reporting"><![CDATA[ … ]]></h-embedded-data>
+```
 
-## Example 13 — SQL in its own file, includes by relative path
+`database` means nothing to the engine — invent whatever vocabulary your templates need
+(`tenant`, `region`, `retries`) and interpret it in the factory. `TemplateConnection.Owned`
+lets the engine dispose the connection after the block; `Borrowed` keeps it yours.
 
-A query can live next to the template instead of inside it, via `src`:
+> A template's own `connection-string` attribute is **not** honoured. A template is data, and
+> data should not choose which database the application talks to. Read it in your factory if you
+> really want that.
+
+### Data that isn't SQL
+
+A block whose `content-type` is `json` carries its own rows — written inline, or fetched by `src`:
 
 ```html
-<!-- index.html -->
-<h-embedded-data src="query.sql"></h-embedded-data>
+<h-embedded-data content-type="json" src="https://api.example.com/users"
+                 header-Authorization="Bearer {{token}}"></h-embedded-data>
 <li>{{name}}</li>
-
-<!-- query.sql -->
-select name from products where category = {{category}} order by name
 ```
 
-Relative URIs — in `src` and in `<h-embedded-template>` — resolve against the including
-template's own location, so a template folder can be moved or deployed anywhere as a unit.
-The classic `{uri{.}}` placeholder still works and remains useful when you want to be explicit.
-
-## Async
-
-Every `RenderContent` overload has a `RenderContentAsync` twin. The engine is natively
-asynchronous — database queries, file reads and HTTP fetches all await — and the synchronous
-overloads are thin wrappers for callers that don't need it:
+Mix sources in one document by composing providers:
 
 ```csharp
-var html = await new Uri(path).RenderContentAsync(connection, new { category = "Displays" });
+var provider = TemplateDataProviders.Compose(
+    new JsonTemplateDataProvider(),
+    new DbTemplateDataProvider(connectionFactory));
 ```
+
+Each provider inspects the block and declines what isn't its; the first real answer wins. Serving
+rows from a cache, a queue, or SFTP means writing one `ITemplateDataProvider` — no fork required.
+
+### Loading templates from anywhere
+
+`TemplateOptions.ContentResolver` decides what a template URI means, for the root template, every
+include, and a block's `src`:
+
+```csharp
+options.ContentResolver = async (uri, attrs, ct) =>
+    cache.TryGetValue(uri, out var hit)
+        ? hit
+        : cache[uri] = await TemplateContent.FetchAsync(uri, attrs, ct);
+```
+
+The default reads local files and http(s), honouring `referrer`, `user-agent` and any `header-*`
+attributes. Call it from your own resolver rather than reimplementing it — this is also why the
+package contains no HTTP client of its own: a REST-backed data block is just `src` plus whatever
+resolver you supply.
 
 ---
 
@@ -474,97 +442,64 @@ var html = await new Uri(path).RenderContentAsync(connection, new { category = "
 
 | Tag | Purpose |
 |---|---|
-| `<h-embedded-data>` | A query. Its CDATA content is the SQL; the rest of the file is the body, repeated per row. |
+| `<h-embedded-data>` | A data block. CDATA content is the query (or `src` names it); the rest of the file is the body, repeated per row. |
 | `<h-embedded-template>` | Includes another template. CDATA content is its URI; `{uri{.}}` is the including file's folder. |
 
 ### Attributes on `<h-embedded-data>`
 
 | Attribute | Meaning |
 |---|---|
-| `open-marker` / `close-marker` | Marker syntax for the **body** (default `{{` / `}}`). Any characters; escaped before use. A custom open marker also keeps accepting `{{name}}`. |
-| `marker-pattern` | A regex with named groups `open_marker` / `param` / `close_marker`, used instead of the pair above. |
-| `null-value` | Text substituted for a null column value (default `null`). |
-| `src` | Load the query (or, with `content-type="json"`, the data) from a URI instead of CDATA. Relative URIs resolve against the template. |
-| `content-type` | `json` makes the block self-contained (Example 12); anything else is carried through to the provider. |
-| `header-*`, `referrer`, `user-agent` | HTTP headers used when `src` is fetched. |
-| `connection-string` | **Ignored by default** — see [Safety](#safety). |
-| `pre-render` | **Rejected by default** — see [Safety](#safety). |
+| `marker` / `close-marker` | Dedicated marker for this block's rows. Default `{{` / `}}`. |
+| `marker-pattern` | A regex with `open_marker` / `param` / `close_marker` groups, instead of the pair above. |
+| `content-type` | Which provider claims the block. `json` is built in; anything else goes to your provider. |
+| `src` | Resolve the query (or payload) from this URI. |
+| Anything else | Yours. Passed to the provider and the connection factory untouched. |
 
-Underscore forms (`connection_string`, `pre_render`, …) are accepted everywhere the dash forms are.
-
-`<h-embedded-template>` accepts `header-*`, `referrer` and `user-agent` too, applied when its
-URI is fetched.
+Underscores and dashes are interchangeable — `content_type` and `content-type` are one attribute.
 
 ### Markers
 
 | Marker | Meaning |
 |---|---|
-| `{{name}}` | a value, written verbatim |
-| `{html{name}}` | a value, HTML/XML encoded (Example 10) |
-| `{url{name}}` | a value, percent-encoded |
-| `{now{fmt}}`, `{tomorrow{fmt}}`, `{yesterday{fmt}}` | a date, in the current culture |
+| `{{name}}` | a value, searched innermost-first through the model chain |
+| `{block{name}}` | a value from **only** the block that declared `{block{` |
+| `{html{name}}` / `{url{name}}` | a value, encoded |
+| `{now{fmt}}` `{tomorrow{fmt}}` `{yesterday{fmt}}` | a date, in the current culture |
 | `{uri{.}}` / `{uri{./}}` | the including template's folder |
 
-One close marker (`}}`) for everything; the open marker carries the meaning. That is the same
-convention `Com.H.Data.Common` and the DBToRestAPI configuration use.
+One close marker (`}}`) for everything; the open marker carries the meaning.
 
 ### Things worth knowing
 
-- **One query per template file** — its rows repeat the whole file, so a second
-  `<h-embedded-data>` is ambiguous and throws, with a message pointing at nested templates.
-- **A query makes the whole file repeat.** Use nesting (Examples 5 and 8) to control what repeats
-  and what doesn't.
-- **Zero rows renders nothing** for that file. This is distinct from *no database at all* — see
-  Example 11.
-- **Include cycles are detected** — templates that include each other fail with a clear error
-  instead of hanging.
-
-### Choosing an overload
-
-| You have | Call |
-|---|---|
-| Values only, no query | `content.RenderContent(dataModel)` |
-| A template file, no query | `new Uri(path).RenderContent(dataModel)` |
-| A query, one connection | `content.RenderContent(connection, dataModel)` |
-| A template file with a query | `new Uri(path).RenderContent(connection, dataModel)` |
-| A connection per query, or custom rules | `content.RenderContent(provider, dataModel)` |
-
-A database-less overload used on a template that *does* contain a query doesn't fail — the query
-is skipped and the template renders once from your data model. See Example 11.
+- **One data block per template file.** A second `<h-embedded-data>` is an error — put each query
+  in its own file and include them.
+- **A data block repeats the whole file.** Use nesting to control what repeats.
+- **Zero rows renders nothing**; *no data source* renders once (Example 11).
+- **Values are never re-scanned.** A row containing `{{x}}` or `<h-embedded-template>` is emitted
+  verbatim, so untrusted data cannot become template syntax.
+- **Include cycles** are detected at depth 32 and reported.
 
 ## Safety
 
-| Behaviour | Default | Why |
-|---|---|---|
-| Parameter values | always bound as `DbParameter` | no textual substitution into SQL, ever |
-| `pre-render="true"` | **rejected** | it pastes values into the SQL as text, reintroducing injection risk |
-| `connection-string` attribute | **ignored** | a template is data; data should not choose which database the application talks to |
-
-`pre-render` can be enabled with `allowPreRender: true` when a template must interpolate an
-*identifier* — a table or column name — which cannot be parameterised. Use it only on templates
-you control.
-
-To honour a template's `connection-string`, opt in explicitly with a connection factory:
-
-```csharp
-var provider = new DbTemplateDataProvider(
-    req => req.ConnectionString!.CreateDbConnection("Microsoft.Data.SqlClient"));
-
-var html = template.RenderContent(provider, new { category = "Displays" });
-```
+| Behaviour | Why |
+|---|---|
+| Parameter values are always bound as `DbParameter` | no textual substitution into SQL, ever — there is no option to turn this off |
+| A template's `connection-string` is ignored | a template is data; data should not choose the database |
+| Substituted values are never re-parsed | untrusted data cannot inject markers, includes, or queries |
+| Header values containing CR/LF are rejected | a marker-filled header cannot split an HTTP request |
 
 ## Target frameworks
 
-`netstandard2.0`, `net8.0`, `net9.0`, `net10.0` — so .NET Framework 4.6.1+, .NET Core 2.0+, Mono,
-Xamarin and Unity are all covered alongside modern .NET.
+`netstandard2.0`, `net8.0`, `net9.0`, `net10.0` — .NET Framework 4.6.1+, .NET Core 2.0+, Mono,
+Xamarin and Unity alongside modern .NET. The only dependency is
+[Com.H.Data.Common](https://github.com/H7O/Com.H.Data.Common).
 
 ## Tests
 
 Every example on this page is executed by
-the `DocumentationExamplesTests` suite in the repository, including the injection
-payloads in Example 7 — so the documentation cannot quietly drift from the behaviour. A separate
-legacy-parity suite, whose expected values were captured by running
-the **original** engine, pins template-file compatibility with `Com.H.Text.Template`.
+the `DocumentationExamplesTests` suite in the repository, so the documentation
+cannot drift from the behaviour. `LegacyParityTests.cs` pins compatibility with the original
+`Com.H.Text.Template` engine, and `SecurityTests.cs` pins the injection properties.
 
 ```
 dotnet test
@@ -572,20 +507,13 @@ dotnet test
 
 ## How this relates to Com.H
 
-Two things worth knowing, neither of which you need in order to use this package:
+The `2` marks the generation. `Com.H.Text.Template` (a namespace inside the `Com.H` package) is
+the original 2016 engine — still supported, still used by deployed applications. **This package is
+the current one**, with its own engine; it no longer depends on `Com.H` at all. Starting
+something new? Take the highest-numbered `Com.H.Text.Template*` package.
 
-- The `2` marks the generation. `Com.H.Text.Template` (inside the
-  [Com.H](https://github.com/H7O/Com.H) package) is the original 2016 engine — still supported,
-  still used by deployed applications. **This package is the current one**: a native
-  reimplementation, template-file compatible with the original (same tags, markers and
-  semantics, pinned by a parity test suite) but natively async and with the original's sharp
-  edges removed. If you're starting something new, take the highest-numbered
-  `Com.H.Text.Template*` package; that's the whole rule.
-- Its only dependency is [Com.H.Data.Common](https://github.com/H7O/Com.H.Data.Common), which
-  supplies the parameterised database access. It does not depend on `Com.H` at all — templating
-  without a database costs you nothing else.
-
-[DESIGN.md](https://github.com/H7O/Com.H.Text.Template2/blob/master/DESIGN.md) covers the architecture and the alternatives that were rejected.
+Existing template files keep working: same tags, markers, date placeholders and repeat-per-row
+semantics. [DESIGN.md](https://github.com/H7O/Com.H.Text.Template2/blob/master/DESIGN.md) covers the architecture and the deliberate divergences;
 [SUCCESSOR-NOTES.md](https://github.com/H7O/Com.H.Text.Template2/blob/master/SUCCESSOR-NOTES.md) records how a future generation should be approached.
 
 ## License

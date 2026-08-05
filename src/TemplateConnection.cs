@@ -70,20 +70,40 @@ namespace Com.H.Text.Template2
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Supplies the <see cref="HttpClient"/> used to fetch a template or a block's <c>src</c>.
+    /// Resolves a template's <b>text</b>, given where it lives.
     /// </summary>
+    /// <param name="uri">
+    /// Where the template is. A local path or an http(s) URL for the built-in resolver, but a
+    /// custom one may read it as any identifier it likes — a blob key, a cache key, a row id.
+    /// </param>
     /// <param name="attributes">
-    /// Every attribute on the tag, as for <see cref="TemplateConnectionFactory"/>. Use them to
-    /// pick a named client, attach auth, or choose a retry policy.
+    /// The attributes of the <c>&lt;h-embedded-template&gt;</c> tag that asked for it, or empty
+    /// for the root template, which no tag introduced.
     /// </param>
     /// <param name="cancellationToken">Cancellation for the render in progress.</param>
-    /// <returns>The client to use.</returns>
+    /// <returns>The template text, or null if it could not be resolved.</returns>
     /// <remarks>
-    /// The engine never disposes the returned client — unlike a connection, an
-    /// <see cref="HttpClient"/> is normally long-lived, and disposing one per request exhausts
-    /// sockets. Return a client from <c>IHttpClientFactory</c> or a cached singleton.
+    /// <para>
+    /// This is the counterpart to <see cref="ITemplateDataProvider"/>: that one answers "give me
+    /// this block's rows", this one answers "give me this template's text". Returning content
+    /// rather than a transport keeps the engine ignorant of HTTP — a resolver can just as easily
+    /// serve from a cache, blob storage, a database, or a test fixture.
+    /// </para>
+    /// <para>
+    /// Compose rather than reimplement: call <see cref="TemplateContent.FetchAsync"/> for the
+    /// built-in file/http behaviour, including its <c>header-*</c> attribute handling.
+    /// </para>
     /// </remarks>
-    public delegate ValueTask<HttpClient> TemplateHttpClientFactory(
+    /// <example>
+    /// <code>
+    /// options.ContentResolver = async (uri, attrs, ct) =>
+    ///     cache.TryGetValue(uri, out var hit)
+    ///         ? hit
+    ///         : cache[uri] = await TemplateContent.FetchAsync(uri, attrs, ct);
+    /// </code>
+    /// </example>
+    public delegate ValueTask<string?> TemplateContentResolver(
+        Uri uri,
         IReadOnlyDictionary<string, string?> attributes,
         CancellationToken cancellationToken);
 }

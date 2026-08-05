@@ -306,6 +306,7 @@ namespace Com.H.Text.Template2
         {
             options ??= TemplateOptions.Default;
             TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
+            TemplateEngine.ContentResolver = options.ContentResolver;
 
             return await TemplateEngine.RenderAsync(
                 content,
@@ -350,6 +351,7 @@ namespace Com.H.Text.Template2
             if (uri is null) throw new ArgumentNullException(nameof(uri));
             options ??= TemplateOptions.Default;
             TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
+            TemplateEngine.ContentResolver = options.ContentResolver;
 
             var ct = cancellationToken ?? CancellationToken.None;
             var models = ToModels(dataModel);
@@ -357,9 +359,15 @@ namespace Com.H.Text.Template2
             // the URI itself may carry markers, e.g. .../reports/{{reportName}}.html
             var resolved = TemplateEngine.ResolveUri(uri.OriginalString, null, models);
 
-            var content = await TemplateEngine.FetchAsync(
-                resolved, options.Referrer, options.UserAgent,
-                new Dictionary<string, string>(), ct).ConfigureAwait(false);
+            // the root template was introduced by no tag, so it has no attributes of its own
+            var rootAttributes = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(options.Referrer))
+                rootAttributes["referrer"] = options.Referrer;
+            if (!string.IsNullOrWhiteSpace(options.UserAgent))
+                rootAttributes["user-agent"] = options.UserAgent;
+
+            var content = await TemplateEngine.ResolveContentAsync(resolved, rootAttributes, ct)
+                .ConfigureAwait(false);
 
             return await TemplateEngine.RenderAsync(
                 content,
@@ -375,12 +383,31 @@ namespace Com.H.Text.Template2
         // ------------------------------------------------------------- shared plumbing
 
         /// <summary>
-        /// Substitutes the strict provider when a template with no data source must not silently
-        /// skip its query.
+        /// Picks the provider actually used.
         /// </summary>
-        private static ITemplateDataProvider? Effective(
+        /// <remarks>
+        /// With no provider supplied, a <c>content-type="json"</c> block is still
+        /// self-contained — it needs no database — so <see cref="JsonTemplateDataProvider"/> stands
+        /// in. It declines every other block by returning null, which the engine reads as "no data
+        /// source" and renders the template once. When
+        /// <see cref="TemplateOptions.ThrowIfQueryPresent"/> is set, the strict provider sits
+        /// behind it and turns that decline into an error.
+        /// </remarks>
+        private static ITemplateDataProvider Effective(
             ITemplateDataProvider? provider, TemplateOptions options)
-            => provider ?? (options.ThrowIfQueryPresent ? StrictNoDataProvider.Instance : null);
+        {
+            if (provider is not null)
+                return options.ThrowIfQueryPresent
+                    ? TemplateDataProviders.Compose(provider, StrictNoDataProvider.Instance)
+                    : provider;
+
+            return options.ThrowIfQueryPresent
+                ? TemplateDataProviders.Compose(SelfContained, StrictNoDataProvider.Instance)
+                : SelfContained;
+        }
+
+        /// <summary>Handles blocks that carry their own data, needing no external source.</summary>
+        private static readonly JsonTemplateDataProvider SelfContained = new();
 
         /// <summary>
         /// Wraps the caller's data model. A null model still yields one entry, so a chain always
@@ -414,7 +441,7 @@ namespace Com.H.Text.Template2
         {
             public static readonly StrictNoDataProvider Instance = new();
 
-            public ValueTask<IEnumerable<dynamic>?> GetDataAsync(
+            public ValueTask<IReadOnlyList<dynamic>?> GetDataAsync(
                 TemplateDataRequest request, CancellationToken cancellationToken = default)
                 => throw new InvalidOperationException(
                     "This template contains an <h-embedded-data> query, but it was rendered "

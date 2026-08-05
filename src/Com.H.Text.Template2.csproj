@@ -43,6 +43,58 @@
     <InternalsVisibleTo Include="Com.H.Text.Template2.Tests" />
   </ItemGroup>
 
+  <!--
+    The compiler writes an XML doc entry for every member carrying a /// comment, whatever its
+    accessibility — so the shipped file otherwise describes internal methods and private fields
+    (21% of it, measured). Those comments are for maintainers reading the source, not for
+    consumers, so they are stripped from the built XML while staying in the code.
+
+    DocFilterInternalType lists the types to strip, matched as a prefix so nested types and
+    members go with them. TemplateEngineIsInternal in the test suite fails if a new internal type
+    is added without a corresponding entry here, so the list cannot silently rot.
+  -->
+  <ItemGroup>
+    <DocFilterInternalType Include="Com.H.Text.Template2.TemplateEngine" />
+    <DocFilterInternalType Include="Com.H.Text.Template2.TemplateExtensions.StrictNoDataProvider" />
+  </ItemGroup>
+
+  <UsingTask TaskName="FilterXmlDoc" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <DocFile ParameterType="System.String" Required="true" />
+      <Prefixes ParameterType="System.String[]" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Xml.Linq" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        if (!System.IO.File.Exists(DocFile)) return true;
+        var doc = XDocument.Load(DocFile);
+        var members = doc.Root.Element("members");
+        if (members == null) return true;
+
+        var drop = members.Elements("member")
+            .Where(m => Prefixes.Any(p =>
+            {
+                var name = (string)m.Attribute("name");
+                if (string.IsNullOrEmpty(name) || name.Length < 3) return false;
+                var target = name.Substring(2);            // strip the "T:" / "M:" / "F:" tag
+                return target == p || target.StartsWith(p + ".") || target.StartsWith(p + "(");
+            }))
+            .ToList();
+
+        foreach (var m in drop) m.Remove();
+        if (drop.Count > 0) doc.Save(DocFile);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="StripInternalXmlDocs" AfterTargets="Build"
+          Condition="'$(DocumentationFile)' != ''">
+    <FilterXmlDoc DocFile="$(DocumentationFile)"
+                  Prefixes="@(DocFilterInternalType)" />
+  </Target>
+
   <!-- Source Link for GitHub -->
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />

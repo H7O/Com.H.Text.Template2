@@ -62,6 +62,17 @@ namespace Com.H.Text.Template2
         /// </remarks>
         public bool ThrowOnUnresolvedMarker { get; set; }
 
+        /// <summary>
+        /// Resolves template text, replacing the built-in file/http(s) reader.
+        /// </summary>
+        /// <remarks>
+        /// Used for the root template, every <c>&lt;h-embedded-template&gt;</c> include, and a
+        /// data block's <c>src</c>. Delegate to <see cref="TemplateContent.FetchAsync"/> for
+        /// anything you do not want to handle yourself — a custom resolver that ignores the
+        /// <c>header-*</c> attributes will silently not send them.
+        /// </remarks>
+        public TemplateContentResolver? ContentResolver { get; set; }
+
         internal static readonly TemplateOptions Default = new();
     }
 }
