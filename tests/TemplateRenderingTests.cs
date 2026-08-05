@@ -159,51 +159,20 @@ public class TemplateRenderingTests : IDisposable
     // ---------------------------------------------------------------------
 
     [Fact]
-    public void RenderContent_PreRenderRequested_IsRejectedByDefault()
+    public void PreRenderAttribute_IsIgnored_NotHonoured()
     {
+        // pre-render is gone: it substituted values into SQL as text, which is the injection
+        // vector this package exists to remove. The attribute is now inert, and the marker is
+        // bound as a parameter like any other -- so a template that relied on textual
+        // interpolation gets a parameter, not a silent injection.
         var template =
             "<h-embedded-data pre-render=\"true\"><![CDATA["
             + "select name from users where country = {{country}}"
             + "]]></h-embedded-data><li>{{name}}</li>";
 
-        var ex = Assert.ThrowsAny<Exception>(() =>
-            template.RenderContent(_connection, new { country = "JO" }));
-
-        Assert.Contains("pre-render", ex.ToString());
-    }
-
-    [Fact]
-    public void RenderContent_PreRenderRequested_AllowedWhenExplicitlyOptedIn()
-    {
-        // Opting in makes the marker a TEXTUAL substitution into the SQL — which is why it is
-        // off by default. The template must therefore quote the value itself, exactly as it
-        // would when interpolating an identifier (the legitimate use).
-        var template =
-            "<h-embedded-data pre-render=\"true\"><![CDATA["
-            + "select name from users where country = '{{country}}'"
-            + "]]></h-embedded-data><li>{{name}}</li>";
-
-        var result = template.RenderContent(
-            _connection, new { country = "JO" }, allowPreRender: true);
-
-        Assert.NotNull(result);
-        Assert.Contains("Ali", result);
-    }
-
-    [Fact]
-    public void RenderContent_PreRender_ActuallySubstitutesIntoTheQuery()
-    {
-        // the documented escape hatch: interpolating an identifier, which cannot be a parameter
-        var template =
-            "<h-embedded-data pre-render=\"true\"><![CDATA["
-            + "select name from {{table}} order by name"
-            + "]]></h-embedded-data><li>{{name}}</li>";
-
-        var result = template.RenderContent(
-            _connection, new { table = "users" }, allowPreRender: true);
+        var result = template.RenderContent(_connection, new { country = "JO" });
 
         Assert.Contains("Ali", result);
-        Assert.Contains("Sara", result);
     }
 
     // ---------------------------------------------------------------------
@@ -261,10 +230,10 @@ public class TemplateRenderingTests : IDisposable
     public void ConnectionFactoryOverload_IsInvokedPerRequest()
     {
         var calls = 0;
-        var provider = new DbTemplateDataProvider(_ =>
+        var provider = new DbTemplateDataProvider((attrs, ct) =>
         {
             calls++;
-            return _connection;
+            return new ValueTask<TemplateConnection?>(TemplateConnection.Borrowed(_connection));
         });
 
         var template = Template(

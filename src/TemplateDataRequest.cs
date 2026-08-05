@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using Com.H.Data.Common;
 
 namespace Com.H.Text.Template2
 {
@@ -17,41 +18,34 @@ namespace Com.H.Text.Template2
         /// </summary>
         public string? Query { get; set; }
 
-        /// <summary>
-        /// The tag's <c>connection-string</c> attribute, verbatim. <see cref="DbTemplateDataProvider"/>
-        /// ignores it by default — a template is data, and data should not choose which database
-        /// the application talks to. A caller-supplied connection factory may opt in to reading it.
-        /// </summary>
-        public string? ConnectionString { get; set; }
-
         /// <summary>The tag's <c>content-type</c> attribute, verbatim (e.g. <c>sql</c>).</summary>
         public string? ContentType { get; set; }
 
         /// <summary>
-        /// True when the tag sets <c>pre-render="true"</c>, asking for values to be substituted
-        /// into the query as text before execution. <see cref="DbTemplateDataProvider"/> rejects
-        /// this unless explicitly allowed, because textual substitution reintroduces SQL
-        /// injection risk.
+        /// Every attribute on the tag, keyed case-insensitively with <c>_</c> normalised to
+        /// <c>-</c> (so <c>content_type</c> and <c>content-type</c> are one key).
         /// </summary>
-        public bool PreRender { get; set; }
-
-        /// <summary>
-        /// All attributes present on the tag, keyed case-insensitively with <c>_</c> normalised
-        /// to <c>-</c> (so <c>connection_string</c> and <c>connection-string</c> are the same key).
-        /// </summary>
+        /// <remarks>
+        /// The engine attaches no meaning to attributes beyond the handful it parses itself, so
+        /// this is the extension point: invent whatever your templates need — <c>database</c>,
+        /// <c>tenant</c>, <c>timeout</c>, <c>retries</c> — and interpret them in your provider or
+        /// connection factory.
+        /// </remarks>
         public IReadOnlyDictionary<string, string?> Attributes { get; set; }
             = new Dictionary<string, string?>();
 
         /// <summary>
-        /// The data-model chain in effect where the block appears: the caller's model first,
-        /// then one entry per enclosing data block's current row. Bind markers from every entry —
-        /// each carries its own marker syntax — so a nested template's query can use its parent's
-        /// row values.
+        /// The data-model chain in effect where the block appears: the caller's model first, then
+        /// one entry per enclosing data block's current row.
         /// </summary>
-        public IReadOnlyList<TemplateDataModel> DataModels { get; set; }
-            = Array.Empty<TemplateDataModel>();
+        /// <remarks>
+        /// Passed straight to <c>Com.H.Data.Common</c>, whose <c>ReduceToUnique</c> merges the
+        /// chain per key — which is why a nested block's query can bind a value from its parent's
+        /// current row, or from the caller's model, without either shadowing the other.
+        /// </remarks>
+        public IReadOnlyList<DbQueryParams> DataModels { get; set; } = Array.Empty<DbQueryParams>();
 
-        /// <summary>Cancellation token for the render operation.</summary>
+        /// <summary>Cancellation for the render in progress.</summary>
         public CancellationToken CancellationToken { get; set; }
     }
 }

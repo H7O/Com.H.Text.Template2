@@ -88,7 +88,7 @@ public class EncodingTests : IDisposable
     {
         // encoders address the models directly, so a block's own marker syntax is irrelevant
         var template =
-            "<h-embedded-data open-marker=\"{v1{\"><![CDATA[select name from issuers]]>"
+            "<h-embedded-data marker=\"{v1{\"><![CDATA[select name from issuers]]>"
             + "</h-embedded-data>[{v1{name}}|{html{name}}]";
 
         Assert.Equal("[Smith & Sons <Holdings>|Smith &amp; Sons &lt;Holdings&gt;]",
@@ -96,12 +96,24 @@ public class EncodingTests : IDisposable
     }
 
     [Fact]
-    public void NullValueText_IsNotEncoded_BecauseTheAuthorWroteIt()
+    public void NullValue_CollapsesToEmpty_AndEncodingDoesNotChangeThat()
     {
-        // null-value is markup chosen by the template author, not data
         var template =
-            "<h-embedded-data null-value=\"&lt;em&gt;n/a&lt;/em&gt;\"><![CDATA["
-            + "select name, note from issuers]]></h-embedded-data>[{html{note}}]";
+            "<h-embedded-data><![CDATA[select name, note from issuers]]>"
+            + "</h-embedded-data>[{html{note}}]";
+
+        Assert.Equal("[]", template.RenderContent(_conn));
+    }
+
+    [Fact]
+    public void PlaceholderFromTheQuery_IsEncodedLikeAnyOtherValue()
+    {
+        // placeholder text now comes from the query, so it is data and gets encoded — which is
+        // right: whatever coalesce returns is a value, not markup the template author wrote
+        var template =
+            "<h-embedded-data><![CDATA["
+            + "select coalesce(note, '<em>n/a</em>') as note from issuers"
+            + "]]></h-embedded-data>[{html{note}}]";
 
         Assert.Equal("[&lt;em&gt;n/a&lt;/em&gt;]", template.RenderContent(_conn));
     }

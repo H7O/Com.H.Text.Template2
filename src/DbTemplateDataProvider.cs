@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
-using System.Text.RegularExpressions;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Com.H.Data.Common;
@@ -9,190 +9,102 @@ using Com.H.Data.Common;
 namespace Com.H.Text.Template2
 {
     /// <summary>
-    /// The ADO.NET data provider: satisfies a template's <c>&lt;h-embedded-data&gt;</c> blocks by
-    /// executing their queries through <c>Com.H.Data.Common</c>, which converts
-    /// <c>{{marker}}</c> occurrences into real <see cref="DbParameter"/> objects.
+    /// Runs a template's embedded queries against any ADO.NET database, obtaining the connection
+    /// for each block from a <see cref="TemplateConnectionFactory"/>.
     /// </summary>
     /// <remarks>
-    /// No value is ever substituted into SQL as text. Safety is structural rather than a matter
-    /// of remembering to escape.
+    /// <para>
+    /// Every query goes through <c>Com.H.Data.Common</c>, which turns <c>{{marker}}</c> into a
+    /// real <see cref="DbParameter"/>. No value is ever substituted into SQL as text, so safety
+    /// is structural rather than a matter of remembering to escape.
+    /// </para>
+    /// <para>
+    /// The engine passes the block's attributes to the factory and attaches no meaning to them
+    /// itself — which database to open, and on what terms, is entirely the caller's decision.
+    /// </para>
     /// </remarks>
     public sealed class DbTemplateDataProvider : ITemplateDataProvider
     {
-        private readonly DbConnection? _connection;
-        private readonly Func<TemplateDataRequest, DbConnection>? _connectionFactory;
-        private readonly bool _allowPreRender;
+        private readonly TemplateConnectionFactory _connectionFactory;
         private readonly int? _commandTimeout;
 
         /// <summary>
-        /// Creates a provider that runs every embedded query on the supplied connection.
+        /// Creates a provider that runs every block on the supplied connection, which it never
+        /// opens beyond what executing a query requires and never disposes.
         /// </summary>
-        /// <param name="connection">
-        /// The connection to query. It is neither opened nor disposed by this class beyond what
-        /// executing a query requires, so its lifetime stays with the caller.
-        /// </param>
-        /// <param name="allowPreRender">
-        /// When false (the default) a template requesting <c>pre-render="true"</c> is rejected,
-        /// because pre-rendering substitutes values into the SQL as text and reintroduces
-        /// injection risk. Enable it only when a template must interpolate an identifier
-        /// (a table or column name), which cannot be parameterised — and only for templates you
-        /// control.
-        /// </param>
+        /// <param name="connection">The connection to query.</param>
         /// <param name="commandTimeout">Optional command timeout, in seconds.</param>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="connection"/> is null.</exception>
-        public DbTemplateDataProvider(
-            DbConnection connection,
-            bool allowPreRender = false,
-            int? commandTimeout = null)
+        /// <exception cref="ArgumentNullException"><paramref name="connection"/> is null.</exception>
+        public DbTemplateDataProvider(DbConnection connection, int? commandTimeout = null)
         {
-            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-            _allowPreRender = allowPreRender;
+            if (connection is null) throw new ArgumentNullException(nameof(connection));
+
+            _connectionFactory = (_, _) =>
+                new ValueTask<TemplateConnection?>(TemplateConnection.Borrowed(connection));
             _commandTimeout = commandTimeout;
         }
 
         /// <summary>
-        /// Creates a provider that obtains a connection per data request.
+        /// Creates a provider that asks a factory for the connection to use for each block.
         /// </summary>
         /// <param name="connectionFactory">
-        /// Produces the connection for a given request. The returned connection is closed once the
-        /// query's rows have been read. Use this overload if you want to honour the template's
-        /// <c>connection-string</c> attribute — see the remarks about why that is off by default.
+        /// Receives the block's attributes and returns the connection plus who disposes it.
+        /// Return null to leave the block without a data source, which renders the template once
+        /// from the models already in scope.
         /// </param>
-        /// <param name="allowPreRender">See the other constructor.</param>
         /// <param name="commandTimeout">Optional command timeout, in seconds.</param>
-        /// <remarks>
-        /// The <c>connection-string</c> attribute a template may carry is <b>not</b> honoured
-        /// automatically. A template is data, and data should not be able to point the
-        /// application at an arbitrary database. Reading
-        /// <see cref="TemplateDataRequest.ConnectionString"/> inside your factory is an explicit,
-        /// deliberate opt-in.
-        /// </remarks>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="connectionFactory"/> is null.</exception>
-        public DbTemplateDataProvider(
-            Func<TemplateDataRequest, DbConnection> connectionFactory,
-            bool allowPreRender = false,
-            int? commandTimeout = null)
+        /// <exception cref="ArgumentNullException"><paramref name="connectionFactory"/> is null.</exception>
+        public DbTemplateDataProvider(TemplateConnectionFactory connectionFactory, int? commandTimeout = null)
         {
             _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
-            _allowPreRender = allowPreRender;
             _commandTimeout = commandTimeout;
         }
 
-        /// <summary>
-        /// Executes the query carried by a template's data block and returns its rows.
-        /// </summary>
-        /// <param name="request">The request assembled by the engine.</param>
-        /// <param name="cancellationToken">Cancellation token.</param>
-        /// <returns>
-        /// The result rows, or null when the request carries no query. Rows are fully
-        /// materialised so the underlying reader closes before returning.
-        /// </returns>
-        /// <exception cref="NotSupportedException">
-        /// Thrown when the template requests <c>pre-render="true"</c> and pre-rendering was not
-        /// explicitly enabled.
-        /// </exception>
-        public async Task<IEnumerable<dynamic>?> GetDataAsync(
-            TemplateDataRequest request,
-            CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        public async ValueTask<IEnumerable<dynamic>?> GetDataAsync(
+            TemplateDataRequest request, CancellationToken cancellationToken = default)
         {
-            var query = request?.Query;
-            if (request is null || string.IsNullOrWhiteSpace(query)) return null;
+            if (request is null || string.IsNullOrWhiteSpace(request.Query)) return null;
 
-            if (request.PreRender && !_allowPreRender)
-            {
-                throw new NotSupportedException(
-                    "This template sets pre-render=\"true\", which substitutes parameter values "
-                    + "into the SQL as text and reintroduces SQL injection risk. "
-                    + "Com.H.Text.Template2 parameterises queries instead, so pre-rendering "
-                    + "is rejected by default. If the template needs to interpolate an identifier "
-                    + "(a table or column name), which cannot be parameterised, construct the "
-                    + "provider with allowPreRender: true — and only for templates you control.");
-            }
+            var lease = await _connectionFactory(request.Attributes, cancellationToken)
+                .ConfigureAwait(false);
+            if (lease is null) return null;
 
-            var queryParams = MapQueryParams(request.DataModels);
-
-            if (_connection is not null)
-            {
-                // Caller owns the connection; leave it open for subsequent (possibly nested) requests.
-                return await ExecuteAsync(
-                    _connection, query!, queryParams,
-                    closeConnectionOnExit: false, cancellationToken).ConfigureAwait(false);
-            }
-
-            var connection = _connectionFactory!(request)
-                ?? throw new InvalidOperationException(
-                    "The connection factory returned null for a template data request.");
+            var parameters = request.DataModels as List<DbQueryParams> ?? request.DataModels?.ToList();
 
             try
             {
-                return await ExecuteAsync(
-                    connection, query!, queryParams,
-                    closeConnectionOnExit: true, cancellationToken).ConfigureAwait(false);
+                if (lease.Connection.State != System.Data.ConnectionState.Open)
+                    await lease.Connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+                await using var result = await lease.Connection.ExecuteQueryAsync(
+                    request.Query!,
+                    parameters,
+                    commandTimeout: _commandTimeout,
+                    closeConnectionOnExit: false,
+                    cToken: cancellationToken).ConfigureAwait(false);
+
+                // Materialised before returning: the reader must be closed before the next block
+                // runs, and a template builds its whole document in memory anyway, so there is no
+                // streaming to give up.
+                var rows = new List<dynamic>();
+                await foreach (var row in result.AsAsyncEnumerable().WithCancellation(cancellationToken))
+                    rows.Add(row);
+
+                return rows;
             }
-            catch
+            finally
             {
-                // this provider owns a factory-created connection; closeConnectionOnExit only
-                // applies once execution succeeds, so a failure here would otherwise leak it
-                try { connection.Dispose(); } catch { }
-                throw;
-            }
-        }
-
-        private async Task<List<dynamic>> ExecuteAsync(
-            DbConnection connection,
-            string query,
-            List<DbQueryParams>? queryParams,
-            bool closeConnectionOnExit,
-            CancellationToken cancellationToken)
-        {
-            await using var result = await connection.ExecuteQueryAsync(
-                query,
-                queryParams,
-                commandTimeout: _commandTimeout,
-                closeConnectionOnExit: closeConnectionOnExit,
-                cToken: cancellationToken).ConfigureAwait(false);
-
-            var rows = new List<dynamic>();
-            await foreach (var row in result.AsAsyncEnumerable()
-                .WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
-                rows.Add(row);
-            }
-            return rows;
-        }
-
-        /// <summary>
-        /// Translates the engine's data-model chain into the data layer's parameter model.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// A pass-through: <see cref="TemplateDataModel.MarkerPattern"/> is deliberately the same
-        /// named-group shape as <c>DbQueryParams.QueryParamsRegex</c>, so a template's markers
-        /// address query parameters without any translation.
-        /// </para>
-        /// <para>
-        /// <see cref="TemplateDataModel.NullValue"/> is not carried across. It substitutes text
-        /// into the rendered body, whereas parameterised execution binds a genuine <c>DBNull</c> —
-        /// both safer and more correct.
-        /// </para>
-        /// </remarks>
-        internal static List<DbQueryParams>? MapQueryParams(IReadOnlyList<TemplateDataModel>? models)
-        {
-            if (models is null || models.Count == 0) return null;
-
-            var mapped = new List<DbQueryParams>();
-            foreach (var entry in models)
-            {
-                if (entry?.Model is null) continue;
-                mapped.Add(new DbQueryParams
+                if (lease.DisposeWhenDone)
                 {
-                    DataModel = entry.Model,
-                    QueryParamsRegex = string.IsNullOrWhiteSpace(entry.MarkerPattern)
-                        ? TemplateDataModel.DefaultPattern
-                        : entry.MarkerPattern
-                });
+                    // disposing a failed connection must not mask the original error
+#if NETSTANDARD2_0
+                    try { lease.Connection.Dispose(); } catch { }
+#else
+                    try { await lease.Connection.DisposeAsync().ConfigureAwait(false); } catch { }
+#endif
+                }
             }
-            return mapped.Count == 0 ? null : mapped;
         }
     }
 }

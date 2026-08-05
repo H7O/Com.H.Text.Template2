@@ -9,12 +9,24 @@ namespace Com.H.Text.Template2.Tests;
 /// replaced it — these tests are the compatibility contract for existing template files.
 /// </summary>
 /// <remarks>
-/// There is exactly one <b>deliberate</b> divergence, covered by <c>ModelChainTests</c>: marker
-/// resolution now walks the model chain per key, so a caller value the current row lacks stays
-/// reachable. The original overwrote it with the row's null text. That was a defect — verified
-/// against Com.H 10.2.0, where rendering with [outer, row] silently dropped the caller's value —
-/// and it made the ordinary "some values from the caller, the rest from a query" case fail
-/// invisibly. Collision priority is unchanged: the row still wins a key both models have.
+/// <para>
+/// Two <b>deliberate</b> divergences, both replacing behaviour that was a defect rather than a
+/// contract:
+/// </para>
+/// <para>
+/// <b>1. Model-chain resolution</b> (see <c>ModelChainTests</c>). Markers now resolve per key,
+/// innermost model first, so a caller value the current row lacks stays reachable. The original
+/// overwrote it with the row's null text — verified against Com.H 10.2.0, where rendering with
+/// [outer, row] silently dropped the caller's value. Collision priority is unchanged: the row
+/// still wins a key both models have.
+/// </para>
+/// <para>
+/// <b>2. Unresolved markers collapse to empty</b>. The original emitted the literal word
+/// <c>null</c>, which reached readers of production emails. A template wanting placeholder text
+/// says so in its query (<c>coalesce</c>), where the meaning is known — so the
+/// <c>null-value</c> attribute is gone with it. Set
+/// <c>TemplateOptions.ThrowOnUnresolvedMarker</c> in development to make the silence loud.
+/// </para>
 /// </remarks>
 public class LegacyParityTests : IDisposable
 {
@@ -45,26 +57,42 @@ public class LegacyParityTests : IDisposable
         return p;
     }
 
+    // ---- divergence 2: unresolved markers collapse instead of emitting "null" ----
+
     [Fact]
-    public void UnmatchedMarker_BecomesTheNullValueText()
+    public void UnmatchedMarker_CollapsesToEmpty()
     {
-        // legacy: a marker with no matching value renders as the model's null-value ("null")
-        Assert.Equal("a=Ali b=null",
+        // was "a=Ali b=null" on the original engine
+        Assert.Equal("a=Ali b=",
             "a={{name}} b={{missing}}".RenderContent(new { name = "Ali" }));
     }
 
     [Fact]
-    public void NullColumnValue_DefaultNullValueText()
+    public void NullColumnValue_CollapsesToEmpty()
     {
         var t = "<h-embedded-data><![CDATA[select name, email from users order by name]]></h-embedded-data>[{{name}}:{{email}}]";
-        Assert.Equal("[Ali:null][Sara:sara@x.com]", t.RenderContent(_conn));
+        Assert.Equal("[Ali:][Sara:sara@x.com]", t.RenderContent(_conn));
     }
 
     [Fact]
-    public void NullColumnValue_CustomNullValueText()
+    public void PlaceholderText_ComesFromTheQuery_NotAnAttribute()
     {
-        var t = "<h-embedded-data null-value=\"(none)\"><![CDATA[select name, email from users order by name]]></h-embedded-data>[{{name}}:{{email}}]";
+        // replaces null-value="(none)": the query says what a missing value means
+        var t = "<h-embedded-data><![CDATA["
+              + "select name, coalesce(email, '(none)') as email from users order by name"
+              + "]]></h-embedded-data>[{{name}}:{{email}}]";
         Assert.Equal("[Ali:(none)][Sara:sara@x.com]", t.RenderContent(_conn));
+    }
+
+    [Fact]
+    public void UnresolvedMarker_CanBeMadeLoud()
+    {
+        var ex = Assert.ThrowsAny<Exception>(() =>
+            "a={{missing}}".RenderContent(
+                new { other = 1 },
+                new TemplateOptions { ThrowOnUnresolvedMarker = true }));
+
+        Assert.Contains("missing", ex.GetBaseException().Message);
     }
 
     [Fact]
@@ -109,7 +137,7 @@ public class LegacyParityTests : IDisposable
     public void AsymmetricMarkers_OpenOverriddenCloseDefaulted()
     {
         // production templates set open-marker="{v1{" and leave close at "}}"
-        var t = "<h-embedded-data open-marker=\"{v1{\"><![CDATA[select name from users order by name]]></h-embedded-data>name={v1{name}} ";
+        var t = "<h-embedded-data marker=\"{v1{\"><![CDATA[select name from users order by name]]></h-embedded-data>name={v1{name}} ";
         Assert.Equal("name=Ali name=Sara ", t.RenderContent(_conn));
     }
 
@@ -141,20 +169,20 @@ public class LegacyParityTests : IDisposable
     [Fact]
     public void UnderscoreAttributeVariants_AreAccepted()
     {
-        // legacy accepted pre_render / connection_string alongside the dash forms
-        var t = "<h-embedded-data pre_render=\"true\"><![CDATA[select name from users]]></h-embedded-data>{{name}}";
-        var ex = Assert.ThrowsAny<Exception>(() => t.RenderContent(_conn));
-        Assert.Contains("pre-render", ex.GetBaseException().Message);
+        // legacy accepted content_type / connection_string alongside the dash forms, so
+        // attribute names still normalise '_' to '-'
+        var t = "<h-embedded-data content_type=\"sql\"><![CDATA[select name from users order by name]]>"
+              + "</h-embedded-data>[{{name}}]";
+        Assert.Equal("[Ali][Sara]", t.RenderContent(_conn));
     }
 
-
     [Fact]
-    public void NullDataModel_StillReplacesMarkersWithTheNullValueText()
+    public void NullDataModel_DoesNotLeakRawMarkerSyntax()
     {
-        // legacy always constructed one QueryParams even for a null model, so markers became
-        // "null" rather than leaking raw {{marker}} syntax into the output
-        Assert.Equal("Hello null.", "Hello {{name}}.".RenderContent((object?)null));
-        Assert.Equal("Hello null.", "Hello {{name}}.".RenderContent(_conn));
+        // a chain always exists, so an unfillable marker collapses rather than surviving as
+        // literal "{{name}}" text in the output
+        Assert.Equal("Hello .", "Hello {{name}}.".RenderContent((object?)null));
+        Assert.Equal("Hello .", "Hello {{name}}.".RenderContent(_conn));
     }
 
     [Fact]

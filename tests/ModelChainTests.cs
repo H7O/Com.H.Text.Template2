@@ -34,7 +34,7 @@ public class ModelChainTests : IDisposable
     public void Dispose() => _conn.Dispose();
 
     private const string Template =
-        "<h-embedded-data null-value=\"\"><![CDATA["
+        "<h-embedded-data><![CDATA["
         + "select english_name, entity_name from insider where id = {{ref_id}}"
         + "]]></h-embedded-data>"
         + "<b>{{english_name}}</b><a href=\"{{record_url}}\">Review</a>";
@@ -65,7 +65,7 @@ public class ModelChainTests : IDisposable
     {
         // row 8 has a null entity_name; the caller supplies one
         var template =
-            "<h-embedded-data null-value=\"\"><![CDATA["
+            "<h-embedded-data><![CDATA["
             + "select english_name, entity_name from insider where id = {{ref_id}}"
             + "]]></h-embedded-data>[{{entity_name}}]";
 
@@ -74,21 +74,21 @@ public class ModelChainTests : IDisposable
     }
 
     [Fact]
-    public void KeyMissingEverywhere_StillUsesTheNullText()
+    public void KeyMissingEverywhere_CollapsesToEmpty()
     {
         var template =
-            "<h-embedded-data null-value=\"(none)\"><![CDATA["
+            "<h-embedded-data><![CDATA["
             + "select english_name from insider where id = {{ref_id}}"
             + "]]></h-embedded-data>[{{nowhere}}]";
 
-        Assert.Equal("[(none)]", template.RenderContent(_conn, new { ref_id = 7 }));
+        Assert.Equal("[]", template.RenderContent(_conn, new { ref_id = 7 }));
     }
 
     [Fact]
     public void ChainWorksThroughNestedTemplatesAndCustomMarkers()
     {
         var template =
-            "<h-embedded-data open-marker=\"{v1{\" null-value=\"\"><![CDATA["
+            "<h-embedded-data marker=\"{v1{\"><![CDATA["
             + "select english_name from insider where id = {{ref_id}}"
             + "]]></h-embedded-data>[{v1{english_name}}|{{record_url}}]";
 
@@ -100,7 +100,7 @@ public class ModelChainTests : IDisposable
     public void EncodedMarkers_ResolveThroughTheChainToo()
     {
         var template =
-            "<h-embedded-data null-value=\"\"><![CDATA["
+            "<h-embedded-data><![CDATA["
             + "select english_name from insider where id = {{ref_id}}"
             + "]]></h-embedded-data>[{html{title}}]";
 

@@ -4,6 +4,7 @@ using System.Data.Common;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Com.H.Data.Common;
 
 namespace Com.H.Text.Template2
 {
@@ -12,6 +13,11 @@ namespace Com.H.Text.Template2
     /// <c>&lt;h-embedded-data&gt;</c> block runs a query (its rows repeat the template body);
     /// <c>&lt;h-embedded-template&gt;</c> nests other templates.
     /// </summary>
+    /// <remarks>
+    /// Every overload funnels into one implementation that takes an
+    /// <see cref="ITemplateDataProvider"/>. The others differ only in how they obtain one: from a
+    /// connection, from a <see cref="TemplateConnectionFactory"/>, or not at all.
+    /// </remarks>
     public static class TemplateExtensions
     {
         // ------------------------------------------------------------- with a DbConnection
@@ -20,215 +26,196 @@ namespace Com.H.Text.Template2
         /// Renders template content, executing any embedded query against the supplied connection.
         /// </summary>
         /// <param name="content">The template text.</param>
-        /// <param name="connection">The connection embedded queries run on.</param>
+        /// <param name="connection">
+        /// The connection embedded queries run on. Opened if not already open, and never disposed
+        /// — its lifetime stays with you.
+        /// </param>
         /// <param name="dataModel">
         /// Values for the template's <c>{{markers}}</c>. Anonymous object, dictionary, JSON string,
         /// <c>JsonElement</c>, or any object with matching properties. Values reaching a query are
         /// bound as SQL parameters, never substituted as text.
         /// </param>
-        /// <param name="contentParentAbsolutePath">
-        /// Base path used to resolve nested template references. Defaults to the app base directory.
-        /// </param>
-        /// <param name="allowPreRender">See <see cref="DbTemplateDataProvider"/>. Off by default.</param>
-        /// <param name="commandTimeout">Optional command timeout, in seconds.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>The rendered content.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="connection"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="connection"/> is null.</exception>
         public static string? RenderContent(
             this string content,
             DbConnection connection,
             object? dataModel = null,
-            string? contentParentAbsolutePath = null,
-            bool allowPreRender = false,
-            int? commandTimeout = null,
+            TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
-            => RenderContentAsync(
-                content, connection, dataModel, contentParentAbsolutePath,
-                allowPreRender, commandTimeout, cancellationToken)
+            => RenderContentAsync(content, connection, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(string, DbConnection, object?, string?, bool, int?, CancellationToken?)"/>.
+        /// <see cref="RenderContent(string, DbConnection, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this string content,
             DbConnection connection,
             object? dataModel = null,
-            string? contentParentAbsolutePath = null,
-            bool allowPreRender = false,
-            int? commandTimeout = null,
+            TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
         {
             if (connection is null) throw new ArgumentNullException(nameof(connection));
+            options ??= TemplateOptions.Default;
 
-            return TemplateEngine.RenderAsync(
+            return RenderContentAsync(
                 content,
-                ParentPathToUri(contentParentAbsolutePath),
-                ToModels(dataModel),
-                new DbTemplateDataProvider(connection, allowPreRender, commandTimeout),
-                referrer: null,
-                userAgent: null,
-                depth: 0,
-                cancellationToken ?? CancellationToken.None);
+                new DbTemplateDataProvider(connection, options.CommandTimeout),
+                dataModel, options, cancellationToken);
         }
 
         /// <summary>
         /// Renders the template at a URI, executing any embedded query against the supplied connection.
         /// </summary>
         /// <param name="uri">Location of the template. Local paths and http(s) are both supported.</param>
-        /// <param name="connection">The connection embedded queries run on.</param>
-        /// <param name="dataModel">Values for the template's <c>{{markers}}</c>; bound as SQL parameters when they reach a query.</param>
-        /// <param name="allowPreRender">See <see cref="DbTemplateDataProvider"/>. Off by default.</param>
-        /// <param name="commandTimeout">Optional command timeout, in seconds.</param>
+        /// <param name="connection">The connection embedded queries run on; never disposed by the engine.</param>
+        /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <param name="referrer">Optional referrer header, for http(s) templates.</param>
-        /// <param name="userAgent">Optional user-agent header, for http(s) templates.</param>
         /// <returns>The rendered content.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="uri"/> or <paramref name="connection"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="uri"/> or <paramref name="connection"/> is null.</exception>
         public static string? RenderContent(
             this Uri uri,
             DbConnection connection,
             object? dataModel = null,
-            bool allowPreRender = false,
-            int? commandTimeout = null,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null)
-            => RenderContentAsync(
-                uri, connection, dataModel, allowPreRender, commandTimeout,
-                cancellationToken, referrer, userAgent)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(uri, connection, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(Uri, DbConnection, object?, bool, int?, CancellationToken?, string?, string?)"/>.
+        /// <see cref="RenderContent(Uri, DbConnection, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this Uri uri,
             DbConnection connection,
             object? dataModel = null,
-            bool allowPreRender = false,
-            int? commandTimeout = null,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
         {
             if (connection is null) throw new ArgumentNullException(nameof(connection));
+            options ??= TemplateOptions.Default;
 
-            return RenderUriAsync(
+            return RenderContentAsync(
                 uri,
-                ToModels(dataModel),
-                new DbTemplateDataProvider(connection, allowPreRender, commandTimeout),
-                cancellationToken, referrer, userAgent);
+                new DbTemplateDataProvider(connection, options.CommandTimeout),
+                dataModel, options, cancellationToken);
         }
 
-        // ------------------------------------------------------------- with a provider
+        // ------------------------------------------------------- with a connection factory
 
         /// <summary>
-        /// Renders template content using a caller-supplied provider — a per-request connection
-        /// factory, a caching layer, or any other <see cref="ITemplateDataProvider"/>.
+        /// Renders template content, asking a factory for the connection each data block runs on.
         /// </summary>
         /// <param name="content">The template text.</param>
-        /// <param name="provider">The provider satisfying embedded data blocks.</param>
+        /// <param name="connectionFactory">
+        /// Receives the block's attributes and returns the connection plus who disposes it. The
+        /// engine attaches no meaning to attributes it doesn't parse itself, so this is where a
+        /// template's own vocabulary — <c>database</c>, <c>tenant</c>, <c>timeout</c> — is
+        /// interpreted. Return null to leave the block without a data source.
+        /// </param>
         /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
-        /// <param name="contentParentAbsolutePath">Base path used to resolve nested template references.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         /// <returns>The rendered content.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="provider"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="connectionFactory"/> is null.</exception>
+        /// <example>
+        /// <code>
+        /// var html = await template.RenderContentAsync(
+        ///     (attrs, ct) =>
+        ///     {
+        ///         var name = attrs.TryGetValue("database", out var v) ? v : "default";
+        ///         return new ValueTask&lt;TemplateConnection?&gt;(
+        ///             TemplateConnection.Owned(factory.Create(name)));
+        ///     },
+        ///     new { country = "JO" });
+        /// </code>
+        /// </example>
         public static string? RenderContent(
             this string content,
-            ITemplateDataProvider provider,
+            TemplateConnectionFactory connectionFactory,
             object? dataModel = null,
-            string? contentParentAbsolutePath = null,
+            TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
-            => RenderContentAsync(content, provider, dataModel, contentParentAbsolutePath, cancellationToken)
+            => RenderContentAsync(content, connectionFactory, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(string, ITemplateDataProvider, object?, string?, CancellationToken?)"/>.
+        /// <see cref="RenderContent(string, TemplateConnectionFactory, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this string content,
-            ITemplateDataProvider provider,
+            TemplateConnectionFactory connectionFactory,
             object? dataModel = null,
-            string? contentParentAbsolutePath = null,
+            TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
         {
-            if (provider is null) throw new ArgumentNullException(nameof(provider));
+            if (connectionFactory is null) throw new ArgumentNullException(nameof(connectionFactory));
+            options ??= TemplateOptions.Default;
 
-            return TemplateEngine.RenderAsync(
+            return RenderContentAsync(
                 content,
-                ParentPathToUri(contentParentAbsolutePath),
-                ToModels(dataModel),
-                provider,
-                referrer: null,
-                userAgent: null,
-                depth: 0,
-                cancellationToken ?? CancellationToken.None);
+                new DbTemplateDataProvider(connectionFactory, options.CommandTimeout),
+                dataModel, options, cancellationToken);
         }
 
         /// <summary>
-        /// Renders the template at a URI using a caller-supplied provider.
+        /// Renders the template at a URI, asking a factory for the connection each data block runs on.
         /// </summary>
         /// <param name="uri">Location of the template.</param>
-        /// <param name="provider">The provider satisfying embedded data blocks.</param>
+        /// <param name="connectionFactory">See the string overload.</param>
         /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <param name="referrer">Optional referrer header, for http(s) templates.</param>
-        /// <param name="userAgent">Optional user-agent header, for http(s) templates.</param>
         /// <returns>The rendered content.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="uri"/> or <paramref name="provider"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="uri"/> or <paramref name="connectionFactory"/> is null.</exception>
         public static string? RenderContent(
             this Uri uri,
-            ITemplateDataProvider provider,
+            TemplateConnectionFactory connectionFactory,
             object? dataModel = null,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null)
-            => RenderContentAsync(uri, provider, dataModel, cancellationToken, referrer, userAgent)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(uri, connectionFactory, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(Uri, ITemplateDataProvider, object?, CancellationToken?, string?, string?)"/>.
+        /// <see cref="RenderContent(Uri, TemplateConnectionFactory, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this Uri uri,
-            ITemplateDataProvider provider,
+            TemplateConnectionFactory connectionFactory,
             object? dataModel = null,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
         {
-            if (provider is null) throw new ArgumentNullException(nameof(provider));
+            if (connectionFactory is null) throw new ArgumentNullException(nameof(connectionFactory));
+            options ??= TemplateOptions.Default;
 
-            return RenderUriAsync(uri, ToModels(dataModel), provider, cancellationToken, referrer, userAgent);
+            return RenderContentAsync(
+                uri,
+                new DbTemplateDataProvider(connectionFactory, options.CommandTimeout),
+                dataModel, options, cancellationToken);
         }
 
         // ------------------------------------------------------------- without a database
 
         /// <summary>
-        /// Renders template content that contains no database query.
+        /// Renders template content that needs no data source.
         /// </summary>
         /// <param name="content">The template text.</param>
-        /// <param name="dataModel">
-        /// Values for the template's <c>{{markers}}</c>. Anonymous object, dictionary, JSON string,
-        /// <c>JsonElement</c>, or any object with matching properties.
-        /// </param>
-        /// <param name="contentParentAbsolutePath">
-        /// Base path used to resolve nested template references. Defaults to the app base directory.
-        /// </param>
+        /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <param name="throwIfQueryPresent">
-        /// When true, an <c>InvalidOperationException</c> is thrown if the template (or one it
-        /// nests) contains an <c>&lt;h-embedded-data&gt;</c> query, instead of the query being
-        /// skipped. Use it for templates that must never render without their data.
-        /// </param>
         /// <returns>The rendered content.</returns>
         /// <remarks>
-        /// Use this when the template only substitutes values you already have. If the template
-        /// (or one it nests) does contain an <c>&lt;h-embedded-data&gt;</c> query, the query is
-        /// by default skipped rather than failing: the template renders once with the supplied
-        /// data model. That lets one template be used both with and without a database.
-        /// <c>content-type="json"</c> data blocks are self-contained and still render fully.
+        /// If the template (or one it nests) does contain an <c>&lt;h-embedded-data&gt;</c> query,
+        /// the query is skipped and the template renders once from the supplied model — so one
+        /// template works both with and without a database. Set
+        /// <see cref="TemplateOptions.ThrowIfQueryPresent"/> to make that an error instead.
+        /// <c>content-type="json"</c> blocks are self-contained and still render fully.
         /// </remarks>
         /// <example>
         /// <code>
@@ -238,104 +225,169 @@ namespace Com.H.Text.Template2
         public static string? RenderContent(
             this string content,
             object? dataModel,
-            string? contentParentAbsolutePath = null,
-            CancellationToken? cancellationToken = null,
-            bool throwIfQueryPresent = false)
-            => RenderContentAsync(content, dataModel, contentParentAbsolutePath, cancellationToken, throwIfQueryPresent)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(content, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(string, object?, string?, CancellationToken?, bool)"/>.
+        /// <see cref="RenderContent(string, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this string content,
             object? dataModel,
-            string? contentParentAbsolutePath = null,
-            CancellationToken? cancellationToken = null,
-            bool throwIfQueryPresent = false)
-            => TemplateEngine.RenderAsync(
-                content,
-                ParentPathToUri(contentParentAbsolutePath),
-                ToModels(dataModel),
-                throwIfQueryPresent ? StrictNoDatabaseProvider.Instance : null,
-                referrer: null,
-                userAgent: null,
-                depth: 0,
-                cancellationToken ?? CancellationToken.None);
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(
+                content, provider: null, dataModel, options, cancellationToken);
 
         /// <summary>
-        /// Renders the template at a URI, where the template contains no database query.
+        /// Renders the template at a URI, where the template needs no data source.
         /// </summary>
-        /// <param name="uri">Location of the template. Local paths and http(s) are both supported.</param>
+        /// <param name="uri">Location of the template.</param>
         /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
-        /// <param name="referrer">Optional referrer header, for http(s) templates.</param>
-        /// <param name="userAgent">Optional user-agent header, for http(s) templates.</param>
-        /// <param name="throwIfQueryPresent">
-        /// When true, an <c>InvalidOperationException</c> is thrown if the template (or one it
-        /// nests) contains an <c>&lt;h-embedded-data&gt;</c> query, instead of the query being
-        /// skipped.
-        /// </param>
         /// <returns>The rendered content.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="uri"/> is null.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="uri"/> is null.</exception>
         public static string? RenderContent(
             this Uri uri,
             object? dataModel,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null,
-            bool throwIfQueryPresent = false)
-            => RenderContentAsync(uri, dataModel, cancellationToken, referrer, userAgent, throwIfQueryPresent)
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(uri, dataModel, options, cancellationToken)
                 .GetAwaiter().GetResult();
 
         /// <summary>Async form of
-        /// <see cref="RenderContent(Uri, object?, CancellationToken?, string?, string?, bool)"/>.
+        /// <see cref="RenderContent(Uri, object?, TemplateOptions?, CancellationToken?)"/>.
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this Uri uri,
             object? dataModel,
-            CancellationToken? cancellationToken = null,
-            string? referrer = null,
-            string? userAgent = null,
-            bool throwIfQueryPresent = false)
-            => RenderUriAsync(
-                uri,
-                ToModels(dataModel),
-                throwIfQueryPresent ? StrictNoDatabaseProvider.Instance : null,
-                cancellationToken, referrer, userAgent);
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(uri, provider: null, dataModel, options, cancellationToken);
 
-        // ------------------------------------------------------------- shared plumbing
+        // ---------------------------------------------------------------- with a provider
+        //
+        // The two methods every other overload ends up calling.
 
-        private static async Task<string?> RenderUriAsync(
-            Uri uri,
-            List<TemplateDataModel> models,
+        /// <summary>
+        /// Renders template content using a caller-supplied provider — for data from somewhere
+        /// other than a database, or with rules the connection factory cannot express.
+        /// </summary>
+        /// <param name="content">The template text.</param>
+        /// <param name="provider">
+        /// Satisfies embedded data blocks. Null means the template has no data source: queries
+        /// are skipped and the template renders once from the models in scope.
+        /// </param>
+        /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>The rendered content.</returns>
+        public static string? RenderContent(
+            this string content,
             ITemplateDataProvider? provider,
-            CancellationToken? cancellationToken,
-            string? referrer,
-            string? userAgent)
+            object? dataModel = null,
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(content, provider, dataModel, options, cancellationToken)
+                .GetAwaiter().GetResult();
+
+        /// <summary>Async form of
+        /// <see cref="RenderContent(string, ITemplateDataProvider?, object?, TemplateOptions?, CancellationToken?)"/>.
+        /// </summary>
+        public static async Task<string?> RenderContentAsync(
+            this string content,
+            ITemplateDataProvider? provider,
+            object? dataModel = null,
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
         {
-            if (uri is null) throw new ArgumentNullException(nameof(uri));
-            var ct = cancellationToken ?? CancellationToken.None;
-
-            // the URI itself may carry markers (e.g. .../reports/{{reportName}}.html)
-            var resolved = TemplateEngine.ResolveUri(uri.OriginalString, null, models);
-
-            var content = await TemplateEngine.FetchAsync(
-                resolved, referrer, userAgent,
-                new Dictionary<string, string>(), ct).ConfigureAwait(false);
+            options ??= TemplateOptions.Default;
+            TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
 
             return await TemplateEngine.RenderAsync(
-                content, new Uri(resolved, "."), models, provider,
-                referrer, userAgent, depth: 0, ct).ConfigureAwait(false);
+                content,
+                ParentPathToUri(options.BasePath),
+                ToModels(dataModel),
+                Effective(provider, options),
+                options.Referrer,
+                options.UserAgent,
+                depth: 0,
+                cancellationToken ?? CancellationToken.None).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Wraps the caller's data model. A null model still yields one entry, so unmatched
-        /// markers render as the null-value text rather than leaking raw <c>{{marker}}</c>
-        /// syntax into the output — matching the original engine.
+        /// Renders the template at a URI using a caller-supplied provider.
         /// </summary>
-        private static List<TemplateDataModel> ToModels(object? dataModel)
-            => new List<TemplateDataModel> { new TemplateDataModel { Model = dataModel } };
+        /// <param name="uri">Location of the template.</param>
+        /// <param name="provider">Satisfies embedded data blocks; null means no data source.</param>
+        /// <param name="dataModel">Values for the template's <c>{{markers}}</c>.</param>
+        /// <param name="options">Occasional settings; see <see cref="TemplateOptions"/>.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>The rendered content.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="uri"/> is null.</exception>
+        public static string? RenderContent(
+            this Uri uri,
+            ITemplateDataProvider? provider,
+            object? dataModel = null,
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+            => RenderContentAsync(uri, provider, dataModel, options, cancellationToken)
+                .GetAwaiter().GetResult();
+
+        /// <summary>Async form of
+        /// <see cref="RenderContent(Uri, ITemplateDataProvider?, object?, TemplateOptions?, CancellationToken?)"/>.
+        /// </summary>
+        public static async Task<string?> RenderContentAsync(
+            this Uri uri,
+            ITemplateDataProvider? provider,
+            object? dataModel = null,
+            TemplateOptions? options = null,
+            CancellationToken? cancellationToken = null)
+        {
+            if (uri is null) throw new ArgumentNullException(nameof(uri));
+            options ??= TemplateOptions.Default;
+            TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
+
+            var ct = cancellationToken ?? CancellationToken.None;
+            var models = ToModels(dataModel);
+
+            // the URI itself may carry markers, e.g. .../reports/{{reportName}}.html
+            var resolved = TemplateEngine.ResolveUri(uri.OriginalString, null, models);
+
+            var content = await TemplateEngine.FetchAsync(
+                resolved, options.Referrer, options.UserAgent,
+                new Dictionary<string, string>(), ct).ConfigureAwait(false);
+
+            return await TemplateEngine.RenderAsync(
+                content,
+                new Uri(resolved, "."),
+                models,
+                Effective(provider, options),
+                options.Referrer,
+                options.UserAgent,
+                depth: 0,
+                ct).ConfigureAwait(false);
+        }
+
+        // ------------------------------------------------------------- shared plumbing
+
+        /// <summary>
+        /// Substitutes the strict provider when a template with no data source must not silently
+        /// skip its query.
+        /// </summary>
+        private static ITemplateDataProvider? Effective(
+            ITemplateDataProvider? provider, TemplateOptions options)
+            => provider ?? (options.ThrowIfQueryPresent ? StrictNoDataProvider.Instance : null);
+
+        /// <summary>
+        /// Wraps the caller's data model. A null model still yields one entry, so a chain always
+        /// exists and unmatched markers collapse rather than leaking raw <c>{{marker}}</c> syntax.
+        /// </summary>
+        private static List<DbQueryParams> ToModels(object? dataModel)
+            => new List<DbQueryParams> { new DbQueryParams { DataModel = dataModel } };
 
         private static Uri? ParentPathToUri(string? path)
         {
@@ -354,21 +406,21 @@ namespace Com.H.Text.Template2
         }
 
         /// <summary>
-        /// The opt-in strict provider (<c>throwIfQueryPresent: true</c>). The engine only consults
-        /// a provider when the template actually contains a data block needing one, so reaching
-        /// this means a database-less overload was used on a template that needs a database.
+        /// Used when <see cref="TemplateOptions.ThrowIfQueryPresent"/> is set. The engine only
+        /// consults a provider when a block actually needs one, so reaching this means the
+        /// template wanted data and none was supplied.
         /// </summary>
-        private sealed class StrictNoDatabaseProvider : ITemplateDataProvider
+        private sealed class StrictNoDataProvider : ITemplateDataProvider
         {
-            public static readonly StrictNoDatabaseProvider Instance = new();
+            public static readonly StrictNoDataProvider Instance = new();
 
-            public Task<IEnumerable<dynamic>?> GetDataAsync(
+            public ValueTask<IEnumerable<dynamic>?> GetDataAsync(
                 TemplateDataRequest request, CancellationToken cancellationToken = default)
                 => throw new InvalidOperationException(
-                    "This template contains an <h-embedded-data> query, but it was rendered without a "
-                    + "database connection and throwIfQueryPresent was set. Use an overload that takes "
-                    + "a DbConnection — for example content.RenderContent(connection, dataModel) — or "
-                    + "supply a DbTemplateDataProvider.");
+                    "This template contains an <h-embedded-data> query, but it was rendered "
+                    + "without a data source and TemplateOptions.ThrowIfQueryPresent was set. "
+                    + "Pass a DbConnection, a TemplateConnectionFactory, or an "
+                    + "ITemplateDataProvider.");
         }
     }
 }

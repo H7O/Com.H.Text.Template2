@@ -202,7 +202,7 @@ public class DocumentationExamplesTests : IDisposable
     public void Example9_ChangingTheMarkerSyntax()
     {
         var template =
-            "<h-embedded-data open-marker=\"{v1{\"><![CDATA["
+            "<h-embedded-data marker=\"{v1{\"><![CDATA["
             + "select name from products where category = {{category}} order by name"
             + "]]></h-embedded-data>"
             + "<span style=\"color:{red}\">{v1{name}}</span>";
@@ -252,9 +252,9 @@ public class DocumentationExamplesTests : IDisposable
             "<h-embedded-data><![CDATA[select name from products]]></h-embedded-data><li>{{name}}</li>";
 
         var ex = Assert.ThrowsAny<Exception>(() =>
-            template.RenderContent(new { name = "x" }, throwIfQueryPresent: true));
+            template.RenderContent(new { name = "x" }, new TemplateOptions { ThrowIfQueryPresent = true }));
 
-        Assert.Contains("throwIfQueryPresent", ex.GetBaseException().Message);
+        Assert.Contains("ThrowIfQueryPresent", ex.GetBaseException().Message);
     }
 
     [Fact]
@@ -262,7 +262,7 @@ public class DocumentationExamplesTests : IDisposable
     {
         // the provider is only invoked when a data tag exists, so strict mode costs nothing
         // for templates that genuinely have no query
-        var output = "Hello {{name}}.".RenderContent(new { name = "Ali" }, throwIfQueryPresent: true);
+        var output = "Hello {{name}}.".RenderContent(new { name = "Ali" }, new TemplateOptions { ThrowIfQueryPresent = true });
 
         Assert.Equal("Hello Ali.", output);
     }
@@ -276,7 +276,7 @@ public class DocumentationExamplesTests : IDisposable
             "<ul><h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template></ul>");
 
         Assert.ThrowsAny<Exception>(() =>
-            new Uri(index).RenderContent(new { name = "x" }, throwIfQueryPresent: true));
+            new Uri(index).RenderContent(new { name = "x" }, new TemplateOptions { ThrowIfQueryPresent = true }));
     }
 
     [Fact]
@@ -295,16 +295,17 @@ public class DocumentationExamplesTests : IDisposable
     public void AnyMarkerCharacters_Work()
     {
         // the legacy engine did not regex-escape markers, so '[[' silently failed and '<%'
-        // threw an XmlException; the native engine escapes them, so any characters work
+        // threw an XmlException; the native engine escapes them, so any characters work.
+        // close-marker is optional; }} is the default, but a symmetric pair may read better.
         var template =
-            "<h-embedded-data open-marker=\"[[\" close-marker=\"]]\"><![CDATA["
+            "<h-embedded-data marker=\"[[\" close-marker=\"]]\"><![CDATA["
             + "select name from products where category = {{category}} order by name"
             + "]]></h-embedded-data>[[name]] ";
 
         Assert.Equal("Monitor ", template.RenderContent(_connection, new { category = "Displays" }));
 
         var angled =
-            "<h-embedded-data open-marker=\"<%\" close-marker=\"%>\"><![CDATA["
+            "<h-embedded-data marker=\"<%\" close-marker=\"%>\"><![CDATA["
             + "select name from products where category = {{category}} order by name"
             + "]]></h-embedded-data><%name%> ";
 

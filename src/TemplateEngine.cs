@@ -83,13 +83,30 @@ namespace Com.H.Text.Template2
             => new(Regex.Escape(openMarker) + @"(?<param>.*?)?" + Regex.Escape("}}"),
                    RegexOptions.Singleline | RegexOptions.Compiled);
 
+        /// <summary>
+        /// When set, a marker no model in scope can fill throws instead of collapsing to empty.
+        /// </summary>
+        /// <remarks>
+        /// Ambient rather than a parameter on every method: it is a whole-render setting, and
+        /// threading it through the recursion would add a parameter to signatures that otherwise
+        /// have nothing to do with it. <see cref="AsyncLocal{T}"/> rather than a static field so
+        /// concurrent renders with different settings cannot see each other's value.
+        /// </remarks>
+        private static readonly AsyncLocal<bool> ThrowOnUnresolved = new();
+
+        internal static bool ThrowOnUnresolvedMarker
+        {
+            get => ThrowOnUnresolved.Value;
+            set => ThrowOnUnresolved.Value = value;
+        }
+
         // marker patterns are supplied per model and repeat across rows; compiling each once
         // keeps the per-row cost linear
         private static readonly Dictionary<string, Regex> MarkerRegexCache = new();
 
         private static Regex MarkerRegex(string? pattern)
         {
-            var key = string.IsNullOrWhiteSpace(pattern) ? TemplateDataModel.DefaultPattern : pattern!;
+            var key = string.IsNullOrWhiteSpace(pattern) ? TemplateMarkers.DefaultPattern : pattern!;
             lock (MarkerRegexCache)
             {
                 if (!MarkerRegexCache.TryGetValue(key, out var regex))
@@ -106,7 +123,7 @@ namespace Com.H.Text.Template2
         internal static async Task<string?> RenderAsync(
             string? content,
             Uri? parentUri,
-            List<TemplateDataModel> models,
+            List<DbQueryParams> models,
             ITemplateDataProvider? provider,
             string? referrer,
             string? userAgent,
@@ -149,8 +166,6 @@ namespace Com.H.Text.Template2
             var attrs = ParseAttributes(tag.Groups["attrs"].Value);
 
             var markerPattern = MarkerPatternFromAttributes(attrs);
-            var nullValue = GetAttr(attrs, "null-value") ?? "null";
-            _ = bool.TryParse(GetAttr(attrs, "pre-render") ?? "false", out var preRender);
             var contentType = GetAttr(attrs, "content-type");
 
             var query = tag.Groups["query"].Success ? tag.Groups["query"].Value : null;
@@ -180,18 +195,14 @@ namespace Com.H.Text.Template2
             }
             else if (provider is not null)
             {
-                // pre-render substitutes values into the query text before execution. It is
-                // unsafe by construction, which is why DbTemplateDataProvider rejects it unless
-                // explicitly allowed — but when allowed it has to actually happen here, since
-                // the provider only ever sees the finished query.
-                var effectiveQuery = preRender ? FillModels(query!, models) : query;
-
+                // The query text is handed over UN-substituted so the provider can bind markers
+                // as real parameters. There is deliberately no way to ask for textual
+                // substitution instead — that was `pre-render`, and it was an injection vector
+                // whose only legitimate use (interpolating an identifier) a caller can do itself.
                 rows = await provider.GetDataAsync(new TemplateDataRequest
                 {
-                    Query = effectiveQuery,
-                    ConnectionString = GetAttr(attrs, "connection-string"),
+                    Query = query,
                     ContentType = contentType,
-                    PreRender = preRender,
                     Attributes = attrs,
                     DataModels = models.ToList(),
                     CancellationToken = ct
@@ -211,13 +222,12 @@ namespace Com.H.Text.Template2
             foreach (var row in rows)
             {
                 ct.ThrowIfCancellationRequested();
-                var rowModels = new List<TemplateDataModel>(models)
+                var rowModels = new List<DbQueryParams>(models)
                 {
-                    new TemplateDataModel
+                    new DbQueryParams
                     {
-                        Model = (object?)row,
-                        MarkerPattern = markerPattern,
-                        NullValue = nullValue
+                        DataModel = (object?)row,
+                        QueryParamsRegex = markerPattern
                     }
                 };
                 sb.Append(await RenderPassAsync(
@@ -231,7 +241,7 @@ namespace Com.H.Text.Template2
         private static async Task<string> RenderPassAsync(
             string text,
             Uri? parentUri,
-            List<TemplateDataModel> models,
+            List<DbQueryParams> models,
             ITemplateDataProvider? provider,
             string? referrer,
             string? userAgent,
@@ -268,7 +278,7 @@ namespace Com.H.Text.Template2
         private static async Task<string?> RenderIncludeAsync(
             Match tag,
             Uri? parentUri,
-            List<TemplateDataModel> models,
+            List<DbQueryParams> models,
             ITemplateDataProvider? provider,
             string? referrer,
             string? userAgent,
@@ -306,40 +316,50 @@ namespace Com.H.Text.Template2
         /// file read. Data is data.
         /// </para>
         /// <para>
-        /// Where two models could fill the same span the most recently added wins, matching the
-        /// original engine: a data block's row values override outer values of the same name,
-        /// and a winning model with no matching value substitutes its own
-        /// <see cref="TemplateDataModel.NullValue"/> rather than deferring to an older model.
-        /// Names match case-insensitively. Values format with the current culture, as the
-        /// original engine did, so localised templates keep rendering as they did.
+        /// Resolution is per key, innermost model first — the same merge
+        /// <c>Com.H.Data.Common</c>'s <c>ReduceToUnique</c> applies to query parameters. A row
+        /// value wins a name the caller also has; a caller value the row lacks stays reachable.
+        /// A <i>dedicated</i> marker stops at the model that declared it, because naming a model
+        /// is a promise about which one answered.
+        /// </para>
+        /// <para>
+        /// A name nothing in scope has renders as an empty string, or throws when
+        /// <see cref="ThrowOnUnresolvedMarker"/> is set. Names match case-insensitively, and
+        /// values format with the current culture, as the original engine did.
         /// </para>
         /// </remarks>
-        internal static string FillModels(string text, List<TemplateDataModel> models)
+        internal static string FillModels(string text, List<DbQueryParams> models)
         {
             if (models.Count == 0 || string.IsNullOrEmpty(text)) return text;
 
             // resolve every candidate span against the ORIGINAL text
-            var candidates = new List<(int Start, int Length, int ModelIndex, string Name, Encoder? Encode)>();
+            var candidates = new List<(int Start, int Length, int ModelIndex, string Name, Encoder? Encode, bool Dedicated)>();
             for (var i = 0; i < models.Count; i++)
             {
-                var markerRegex = MarkerRegex(models[i].MarkerPattern);
+                var markerRegex = MarkerRegex(models[i].QueryParamsRegex);
 
                 foreach (var m in markerRegex.Matches(text).Cast<Match>())
                 {
                     var name = m.Groups["param"].Value;
                     if (string.IsNullOrWhiteSpace(name)) continue;
-                    candidates.Add((m.Index, m.Length, i, name, null));
+
+                    // Which alternative of the pattern fired decides how the name is resolved.
+                    // The generic {{ }} means "wherever this lives", so it walks the chain. A
+                    // dedicated marker such as {invoice{ } names one model on purpose, and that
+                    // promise is the whole reason to declare one — so it never falls back.
+                    var dedicated = m.Groups["open_marker"].Value != TemplateMarkers.GenericOpenMarker;
+                    candidates.Add((m.Index, m.Length, i, name, null, dedicated));
                 }
 
-                // encoding markers such as {html{name}} address the same models, so they work
-                // regardless of any custom marker syntax the block declares
+                // encoding markers such as {html{name}} address the models generically, so they
+                // work regardless of any dedicated marker a block declares
                 foreach (var encoder in Encoders)
                 {
                     foreach (var m in encoder.Regex.Matches(text).Cast<Match>())
                     {
                         var name = m.Groups["param"].Value;
                         if (string.IsNullOrWhiteSpace(name)) continue;
-                        candidates.Add((m.Index, m.Length, i, name, encoder.Encode));
+                        candidates.Add((m.Index, m.Length, i, name, encoder.Encode, false));
                     }
                 }
             }
@@ -364,24 +384,19 @@ namespace Com.H.Text.Template2
             {
                 if (c.Start < cursor) continue; // overlaps an already-emitted substitution
 
-                var entry = models[c.ModelIndex];
-
-                // Resolve the NAME down the model chain, innermost first: a row value wins over
-                // a caller value of the same name, but a caller value the row doesn't have stays
-                // reachable. Only when NO model in scope has the key does the null text apply.
+                // A generic marker resolves down the chain, innermost first: a row value wins a
+                // name the caller also has, but a caller value the row lacks stays reachable —
+                // the same per-key merge Com.H.Data.Common applies to query parameters.
                 //
-                // This mirrors how Com.H.Data.Common merges DbQueryParams (ReduceToUnique), which
-                // is why {{ref_id}} always bound correctly inside a query. The original engine did
-                // NOT do this for the body: it replaced markers model-by-model with a global
-                // string replace, so the first model consulted overwrote every marker it lacked
-                // with its own null text and hid every outer value. That made the ordinary
-                // "some values from the caller, the rest from a query" case fail silently.
+                // A dedicated marker stops at the model that declared it. Naming a model is a
+                // promise about which one answered, and a fallback would quietly break it.
                 object? value = null;
-                for (var i = c.ModelIndex; i >= 0; i--)
+                var floor = c.Dedicated ? c.ModelIndex : 0;
+                for (var i = c.ModelIndex; i >= floor; i--)
                 {
                     if (!resolved[i])
                     {
-                        var model = models[i].Model;
+                        var model = models[i].DataModel;
                         valuesByModel[i] = model is null
                             ? null
                             : DataExtensions.GetDataModelParameters(model);
@@ -399,9 +414,14 @@ namespace Com.H.Text.Template2
                 sb.Append(text, cursor, c.Start - cursor);
                 if (value is null)
                 {
-                    // the null text is written by the template author, not supplied as data, so
-                    // it is emitted as-is — null-value="<em>n/a</em>" stays markup
-                    sb.Append(entry.NullValue ?? "");
+                    // Nothing in scope has it. Collapse to empty rather than emitting a
+                    // placeholder word — a report should not show "null" to its reader. A caller
+                    // wanting "n/a" says so in the query (coalesce), where the meaning is known.
+                    if (ThrowOnUnresolvedMarker)
+                        throw new KeyNotFoundException(
+                            $"No data model in scope has a value for marker '{c.Name}'. "
+                            + "This check is on because throwOnUnresolvedMarker was set; without "
+                            + "it the marker renders as an empty string.");
                 }
                 else
                 {
@@ -467,26 +487,34 @@ namespace Com.H.Text.Template2
             => attrs.TryGetValue(name, out var v) ? v : null;
 
         /// <summary>
-        /// Builds a model's marker pattern from a tag's attributes: <c>marker-pattern</c>
-        /// verbatim if present, otherwise derived from <c>open-marker</c> / <c>close-marker</c>.
+        /// Builds a block's marker pattern from its attributes.
         /// </summary>
+        /// <remarks>
+        /// Two tiers. <c>marker="{invoice{"</c> — optionally with <c>close-marker="…"</c> when a
+        /// symmetric pair reads better — is the everyday form, generating a pattern that accepts
+        /// both the generic <c>{{name}}</c> and the dedicated form.
+        /// <c>marker-pattern="…"</c> takes a regex directly, for anything the sugar cannot express
+        /// — and is validated, because a pattern missing a named group would otherwise match
+        /// nothing at all and fail silently.
+        /// </remarks>
         internal static string MarkerPatternFromAttributes(Dictionary<string, string?> attrs)
         {
             var explicitPattern = GetAttr(attrs, "marker-pattern");
-            if (!string.IsNullOrWhiteSpace(explicitPattern)) return explicitPattern!;
+            if (!string.IsNullOrWhiteSpace(explicitPattern))
+            {
+                TemplateMarkers.Validate(explicitPattern!, "The marker-pattern attribute");
+                return explicitPattern!;
+            }
 
-            var open = GetAttr(attrs, "open-marker");
-            var close = GetAttr(attrs, "close-marker");
-            if (string.IsNullOrEmpty(open) && string.IsNullOrEmpty(close))
-                return TemplateDataModel.DefaultPattern;
-
-            // a custom open marker also accepts the generic {{name}} form, matching the
-            // convention Com.H's other libraries use (e.g. {{name}} or {j{name}})
-            return TemplateDataModel.PatternFor(open, close, alsoGeneric: true);
+            var marker = GetAttr(attrs, "marker");
+            var closeMarker = GetAttr(attrs, "close-marker");
+            return string.IsNullOrEmpty(marker) && string.IsNullOrEmpty(closeMarker)
+                ? TemplateMarkers.DefaultPattern
+                : TemplateMarkers.PatternFor(marker, closeMarker);
         }
 
         /// <summary>Marker-fills an attribute value, so headers can carry template data.</summary>
-        private static string? FillAttr(string? value, List<TemplateDataModel> models)
+        private static string? FillAttr(string? value, List<DbQueryParams> models)
             => string.IsNullOrEmpty(value) ? value : FillModels(value!, models);
 
         /// <summary>
@@ -499,7 +527,7 @@ namespace Com.H.Text.Template2
         /// runtime data and could otherwise split the request.
         /// </remarks>
         internal static Dictionary<string, string> CollectHeaders(
-            Dictionary<string, string?> attrs, List<TemplateDataModel> models)
+            Dictionary<string, string?> attrs, List<DbQueryParams> models)
         {
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in attrs)
@@ -541,7 +569,7 @@ namespace Com.H.Text.Template2
         /// data-model markers, then — new to this engine — plain relative paths against the
         /// including template's location.
         /// </summary>
-        internal static Uri ResolveUri(string uriText, Uri? parentUri, List<TemplateDataModel> models)
+        internal static Uri ResolveUri(string uriText, Uri? parentUri, List<DbQueryParams> models)
         {
             var parent = parentUri ?? new Uri(AppendSlash(AppContext.BaseDirectory));
             var parentText = parent.AbsoluteUri;
