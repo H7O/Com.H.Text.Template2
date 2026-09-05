@@ -473,7 +473,7 @@ namespace Com.H.Text.Template2
                     //
                     // The strict check is a typo detector, so it fires only when NO model even
                     // declares the name. A column that exists and is NULL is data, not a mistake,
-                    // and must not turn a rehearsal of a real e-mail into an error.
+                    // and must not turn a development render of real data into an error.
                     if (ThrowOnUnresolvedMarker && !keyKnown)
                         throw new KeyNotFoundException(
                             $"No data model in scope has a value for marker '{c.Name}'. "

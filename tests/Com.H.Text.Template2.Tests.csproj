@@ -17,7 +17,7 @@
          the SQLitePCLRaw bundle at 2.1.11, which pulls the deprecated + vulnerable
          SQLitePCLRaw.lib.e_sqlite3 (CVE-2025-6965 / GHSA-2m69-gcr7-jv3q). Bundle 3.x drops
          lib.e_sqlite3 in favour of SourceGear.sqlite3 (SQLite 3.50.4, past the fix line). A direct
-         (top-level) reference overrides the transitive resolution. Same approach as DBToRestAPI. -->
+         (top-level) reference overrides the transitive resolution. -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

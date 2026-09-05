@@ -56,8 +56,8 @@ reasoning time for AI agents, which already know SQL and would have to be taught
 
 *Does the engine get any logic constructs?* **No**, and it has now been used in anger without
 them. `case when` covers conditional formatting, `coalesce` covers placeholder text, an empty
-result set covers "hide this section", and nesting covers scoping. Nothing in the trial or in
-either production reporting engine needed a template-level `if`.
+result set covers "hide this section", and nesting covers scoping. Nothing in the package's first
+consumer or in either production reporting engine needed a template-level `if`.
 
 Treat that as settled unless a concrete case appears that SQL genuinely cannot express — and
 write the case down before designing for it.
@@ -89,30 +89,31 @@ These cost real debugging. Each is pinned by a test.
 
 ## Where to look
 
-### `C:\code\H7O\Com.H.Text.Template2` — the current engine
+### This repository — the current engine
 
 Start here, not from first principles. `DESIGN.md` lists every decision with its rejected
 alternatives, and the test suite is the specification: `LegacyParityTests` (the compatibility
 contract), `SecurityTests` (injection properties), `ModelChainTests` and `MarkerPatternTests`
 (resolution rules), `DocumentationExamplesTests` (every README example, executed).
 
-### `C:\code\H7O\DBToRestAPI` — how we build applications now
+### The newest application in the family — how we build applications now
 
 Worth noting it does **not** use the templating engine at all. When built from scratch with
-current practices, the engine wasn't reached for. That is evidence about fit.
+current practices, the engine wasn't reached for. That is evidence about fit. What it does have,
+and what a successor should copy:
 
-| Where | What to take |
+| Pattern | What to take |
 |---|---|
-| `Services/DbConnectionFactory.cs` | `Create(connectionStringName)` — connections resolved **by name**, plus a tracking wrapper |
-| `Services/IEncryptedConfiguration.cs` | `IConfiguration` with a decrypting `GetConnectionString(name)` |
-| `config/regex.xml` | the marker convention Template2 adopted: one close marker, the open marker carries the meaning, `{{…}}` always accepted |
-| `Middlewares/Step1…Step8` | an explicitly ordered, numbered pipeline |
-| `Services/HttpExecutor/` | module shape: public interface + `Options` + `Models/` + `Internal/` + DI registration |
+| a connection factory | `Create(connectionStringName)` — connections resolved **by name**, plus a tracking wrapper |
+| an encrypting configuration | `IConfiguration` with a decrypting `GetConnectionString(name)` |
+| a marker-convention file | the convention Template2 adopted: one close marker, the open marker carries the meaning, `{{…}}` always accepted |
+| a numbered middleware pipeline | an explicitly ordered, numbered pipeline |
+| an HTTP executor module | module shape: public interface + `Options` + `Models/` + `Internal/` + DI registration |
 
-### `C:\code\legacy_reporting_engine\NDReportingEngine2019` / `2022` — what production needs
+### The deployed legacy reporting engines — what production needs
 
-The requirements list, not a design to copy. `config/Templates/debug1/sub/temp1.txt` is the
-busiest specimen; `e17/main.xml` + `rows.xml` shows the master-detail split.
+The requirements list, not a design to copy. Their busiest templates and their master-detail
+specimens (a main template including a rows template) show what real reports need.
 
 ### `Com.H.Threading.Scheduler` — what *not* to repeat
 

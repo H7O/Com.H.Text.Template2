@@ -114,10 +114,10 @@ the silence loud in development.
 
 That check is a typo detector, so it fires only for a name **no** model in scope declares. A name
 a model declares with a null value — a `LEFT JOIN` with no match, say — renders as an empty
-string even in strict mode, because a NULL is data, not a mistake. The trial project ran into
-this rehearsing real e-mails with strict mode on, and an error there would have pushed the switch
-off in development, which is the only place it earns its keep. (2026-09-05, from the trial
-project; pinned by the strict-mode tests in `ModelChainTests`.)
+string even in strict mode, because a NULL is data, not a mistake. The first consumer to run
+strict mode in development hit exactly that on legitimate rows, and an error there would have
+pushed the switch off in development, which is the only place it earns its keep. (2026-09-05;
+pinned by the strict-mode tests in `ModelChainTests`.)
 
 ### Rows are materialised, not streamed
 
@@ -184,21 +184,22 @@ section is scoped and how it collapses on zero rows.
 
 ## Evidence from production usage
 
-Surveyed `NDReportingEngine` 2019 and 2022 — both deployed, serving hundreds of reports daily —
-and one live trial in an HTML-email project. Findings that shaped the above:
+Surveyed two deployed reporting engines built on the 2016 engine (2019 and 2022 vintages, serving
+hundreds of reports daily between them) and one live trial of this package in an HTML e-mail
+notification service. Findings that shaped the above:
 
-- **Both apps hand-rolled the provider**, identically, and both routed `PreRender` through
-  `DataExtensions.Fill`: textual substitution into SQL, with a live template interpolating
-  `{{name}}` *inside a quoted SQL literal*.
+- **Both reporting engines hand-rolled the provider**, identically, and both routed `PreRender`
+  through `DataExtensions.Fill`: textual substitution into SQL, with a live template
+  interpolating `{{name}}` *inside a quoted SQL literal*.
 - **Neither used the legacy engine's default provider.** Its
   `Assembly.Load("Com.H.EF.Relational")` reflection targets a class that no longer exists, so it
   always throws.
 - **`connection-string` is a tag attribute**, set per block, credentials included.
 - **Markers may be asymmetric** — `open-marker="{v1{"` with the close left at `}}`.
-- **The trial project hit the model-shadowing bug**, worked around it by selecting a caller value
-  into the query, and reported it. That workaround is no longer needed.
-- **The trial project also had no HTML escaping available** and was about to add a SQL
-  `fn_HtmlEncode`. That produced `{html{…}}` and `{url{…}}`.
+- **The e-mail service hit the model-shadowing bug**, worked around it by selecting a caller
+  value into the query, and reported it. That workaround is no longer needed.
+- **The e-mail service also had no HTML escaping available** and was about to add an
+  HTML-encoding SQL function. That produced `{html{…}}` and `{url{…}}`.
 
 ## Deliberate divergences from the legacy engine
 

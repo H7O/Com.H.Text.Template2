@@ -133,13 +133,13 @@ same template, and **a caller value stays reachable inside the data block**:
 ```csharp
 var template = """
     <h-embedded-data><![CDATA[
-        select english_name from insider where id = {{ref_id}}
+        select price from products where name = {{product}}
     ]]></h-embedded-data>
-    <b>{{english_name}}</b><a href="{{record_url}}">Review</a>
+    <b>{{product}}</b> costs {{price}} <a href="{{details_url}}">Details</a>
     """;
 
-await template.RenderContentAsync(connection, new { ref_id = 7, record_url = "https://app/record/7" });
-// <b>Ali</b><a href="https://app/record/7">Review</a>
+await template.RenderContentAsync(connection, new { product = "Monitor", details_url = "https://shop.example/monitor" });
+// <b>Monitor</b> costs 199 <a href="https://shop.example/monitor">Details</a>
 ```
 
 Markers resolve **per key, innermost first**:

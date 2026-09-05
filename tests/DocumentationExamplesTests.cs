@@ -120,6 +120,26 @@ public class DocumentationExamplesTests : IDisposable
         Assert.DoesNotContain("Monitor", output);
     }
 
+    [Fact]
+    public void Example3_MixingCallerValuesWithQueryResults()
+    {
+        var template =
+            """
+            <h-embedded-data><![CDATA[
+                select price from products where name = {{product}}
+            ]]></h-embedded-data>
+            <b>{{product}}</b> costs {{price}} <a href="{{details_url}}">Details</a>
+            """;
+
+        var output = template.RenderContent(_connection,
+            new { product = "Monitor", details_url = "https://shop.example/monitor" });
+
+        // product and details_url come from the caller, price from the row
+        Assert.Contains(
+            "<b>Monitor</b> costs 199 <a href=\"https://shop.example/monitor\">Details</a>",
+            output);
+    }
+
     // ---------------------------------------------------------------- Example 4
     [Fact]
     public void Example4_TemplateFileWithItsQueryInside()
