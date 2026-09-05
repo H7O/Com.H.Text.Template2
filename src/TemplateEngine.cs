@@ -584,7 +584,7 @@ namespace Com.H.Text.Template2
                 ? original
                 : normalisedKey;
 
-        private const string OriginalNameKey = " orig:";
+        private const string OriginalNameKey = "\0orig:";
 
         // ------------------------------------------------------------------ URIs & fetching
 
