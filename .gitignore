@@ -364,5 +364,5 @@ FodyWeavers.xsd
 # Claude Code local configuration (contains machine-specific paths and tool permissions)
 .claude/
 
-# Claude Code local configuration (contains machine-specific paths and tool permissions)
-.claude/
+# Cross-PC handoff notes between Claude sessions (questions and answers); never committed
+scratchpad/
