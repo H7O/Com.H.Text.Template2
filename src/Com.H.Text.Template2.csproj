@@ -89,7 +89,11 @@
     </Task>
   </UsingTask>
 
-  <Target Name="StripInternalXmlDocs" AfterTargets="Build"
+  <!-- Runs right after the compiler writes the file into obj/. Build then copies it to bin/,
+       which is what dotnet pack ships and what a referencing project sees. Running after Build
+       instead filtered obj/ only after the unfiltered copy had already gone out, so a clean pack
+       shipped the internal docs and the bin/ copy only caught up on the NEXT build. -->
+  <Target Name="StripInternalXmlDocs" AfterTargets="CoreCompile"
           Condition="'$(DocumentationFile)' != ''">
     <FilterXmlDoc DocFile="$(DocumentationFile)"
                   Prefixes="@(DocFilterInternalType)" />
