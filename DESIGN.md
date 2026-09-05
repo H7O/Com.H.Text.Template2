@@ -112,6 +112,13 @@ should not show a placeholder word to its reader. A template wanting `(none)` sa
 query via `coalesce`, where the meaning is known. `TemplateOptions.ThrowOnUnresolvedMarker` makes
 the silence loud in development.
 
+That check is a typo detector, so it fires only for a name **no** model in scope declares. A name
+a model declares with a null value — a `LEFT JOIN` with no match, say — renders as an empty
+string even in strict mode, because a NULL is data, not a mistake. The trial project ran into
+this rehearsing real e-mails with strict mode on, and an error there would have pushed the switch
+off in development, which is the only place it earns its keep. (2026-09-05, from the trial
+project; pinned by the strict-mode tests in `ModelChainTests`.)
+
 ### Rows are materialised, not streamed
 
 `ITemplateDataProvider` returns `IReadOnlyList<dynamic>` — the type states the contract.

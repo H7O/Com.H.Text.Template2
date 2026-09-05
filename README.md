@@ -154,7 +154,8 @@ This is the same rule `Com.H.Data.Common` applies to query parameters.
 
 > Set `TemplateOptions.ThrowOnUnresolvedMarker` in development to make step 4 loud instead of
 > silent. Leave it off in production, where an empty string beats a placeholder word in front of
-> a reader.
+> a reader. It fires only for a name *nothing* declares — a column that exists but is NULL still
+> renders as an empty string, because that is data, not a typo.
 
 ## Example 4 — Keeping the query in the template file
 

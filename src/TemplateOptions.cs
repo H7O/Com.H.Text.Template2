@@ -51,14 +51,21 @@ namespace Com.H.Text.Template2
         public bool ThrowIfQueryPresent { get; set; }
 
         /// <summary>
-        /// When true, a marker no data model in scope can fill throws instead of rendering as an
-        /// empty string.
+        /// When true, a marker whose name no data model in scope declares throws instead of
+        /// rendering as an empty string.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// Off by default, because a report should not show a placeholder word to its reader. The
         /// cost of that is silence: a mistyped <c>{{naem}}</c> simply disappears. Turning this on
         /// in development — and leaving it off in production — buys the diagnostic without the
         /// ugly output.
+        /// </para>
+        /// <para>
+        /// It is a typo detector, not a null detector. A name some model declares with a null
+        /// value — a NULL column, say — still renders as an empty string and never throws: that
+        /// is data, and a check that fired on it would fail on legitimate rows.
+        /// </para>
         /// </remarks>
         public bool ThrowOnUnresolvedMarker { get; set; }
 

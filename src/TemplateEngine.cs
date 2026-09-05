@@ -369,8 +369,10 @@ namespace Com.H.Text.Template2
         /// </para>
         /// <para>
         /// A name nothing in scope has renders as an empty string, or throws when
-        /// <see cref="ThrowOnUnresolvedMarker"/> is set. Names match case-insensitively, and
-        /// values format with the current culture, as the original engine did.
+        /// <see cref="ThrowOnUnresolvedMarker"/> is set. A name a model <i>declares</i> with a null
+        /// value renders as an empty string and never throws: a NULL is data, not a typo. Names
+        /// match case-insensitively, and values format with the current culture, as the original
+        /// engine did.
         /// </para>
         /// </remarks>
         internal static string FillModels(string text, List<DbQueryParams> models)
@@ -436,6 +438,7 @@ namespace Com.H.Text.Template2
                 // A dedicated marker stops at the model that declared it. Naming a model is a
                 // promise about which one answered, and a fallback would quietly break it.
                 object? value = null;
+                var keyKnown = false; // some model in scope declares the name, even if its value is null
                 var floor = c.Dedicated ? c.ModelIndex : 0;
                 for (var i = c.ModelIndex; i >= floor; i--)
                 {
@@ -449,20 +452,29 @@ namespace Com.H.Text.Template2
                     }
 
                     var values = valuesByModel[i];
-                    if (values is not null && values.TryGetValue(c.Name, out var v) && v is not null)
+                    if (values is not null && values.TryGetValue(c.Name, out var v))
                     {
-                        value = v;
-                        break;
+                        keyKnown = true;
+                        if (v is not null)
+                        {
+                            value = v;
+                            break;
+                        }
+                        // a null here is not an answer; an outer model may still have one
                     }
                 }
 
                 sb.Append(text, cursor, c.Start - cursor);
                 if (value is null)
                 {
-                    // Nothing in scope has it. Collapse to empty rather than emitting a
+                    // Nothing in scope has a value. Collapse to empty rather than emitting a
                     // placeholder word — a report should not show "null" to its reader. A caller
                     // wanting "n/a" says so in the query (coalesce), where the meaning is known.
-                    if (ThrowOnUnresolvedMarker)
+                    //
+                    // The strict check is a typo detector, so it fires only when NO model even
+                    // declares the name. A column that exists and is NULL is data, not a mistake,
+                    // and must not turn a rehearsal of a real e-mail into an error.
+                    if (ThrowOnUnresolvedMarker && !keyKnown)
                         throw new KeyNotFoundException(
                             $"No data model in scope has a value for marker '{c.Name}'. "
                             + "This check is on because throwOnUnresolvedMarker was set; without "
