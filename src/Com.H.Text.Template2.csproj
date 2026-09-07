@@ -58,8 +58,7 @@
     <DocFilterInternalType Include="Com.H.Text.Template2.TemplateExtensions.StrictNoDataProvider" />
   </ItemGroup>
 
-  <UsingTask TaskName="FilterXmlDoc" TaskFactory="RoslynCodeTaskFactory"
-             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+  <UsingTask TaskName="FilterXmlDoc" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <DocFile ParameterType="System.String" Required="true" />
       <Prefixes ParameterType="System.String[]" Required="true" />
@@ -93,15 +92,13 @@
        which is what dotnet pack ships and what a referencing project sees. Running after Build
        instead filtered obj/ only after the unfiltered copy had already gone out, so a clean pack
        shipped the internal docs and the bin/ copy only caught up on the NEXT build. -->
-  <Target Name="StripInternalXmlDocs" AfterTargets="CoreCompile"
-          Condition="'$(DocumentationFile)' != ''">
-    <FilterXmlDoc DocFile="$(DocumentationFile)"
-                  Prefixes="@(DocFilterInternalType)" />
+  <Target Name="StripInternalXmlDocs" AfterTargets="CoreCompile" Condition="'$(DocumentationFile)' != ''">
+    <FilterXmlDoc DocFile="$(DocumentationFile)" Prefixes="@(DocFilterInternalType)" />
   </Target>
 
   <!-- Source Link for GitHub -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.400" PrivateAssets="All" />
   </ItemGroup>
 
   <!-- The engine is native to this package; Com.H.Data.Common supplies the parameterised
