@@ -504,6 +504,19 @@ public class DocumentationExamplesTests : IDisposable
     }
 
     [Fact]
+    public void DateMarkers_NeedNoDataModel_SoRenderContentTakesNoArguments()
+    {
+        // the README's line, verbatim: built-in date markers with nothing else in scope
+        var before = DateTime.Now.ToString("yyyy-MM-dd");
+        var output = "Report generated {now{yyyy-MM-dd}}".RenderContent();
+        var after = DateTime.Now.ToString("yyyy-MM-dd");
+
+        // either day is right if the render straddles midnight
+        Assert.Contains(output, new[] { "Report generated " + before, "Report generated " + after });
+        Assert.Equal("[x]", "[{{missing}}x]".RenderContent());
+    }
+
+    [Fact]
     public void SqlCanLiveInItsOwnFile_ViaTheSrcAttribute()
     {
         Write("query.sql", "select name from products where category = {{category}} order by name");

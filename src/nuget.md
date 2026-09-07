@@ -69,7 +69,7 @@ The data model can be an anonymous object, a `Dictionary<string, object>`, a JSO
 There are also built-in date markers, which need no data model:
 
 ```csharp
-"Report generated {now{yyyy-MM-dd}}".RenderContent(new { });
+"Report generated {now{yyyy-MM-dd}}".RenderContent();
 ```
 
 `{now{…}}`, `{tomorrow{…}}` and `{yesterday{…}}` accept standard .NET date format strings and

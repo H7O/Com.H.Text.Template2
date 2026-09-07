@@ -224,7 +224,7 @@ namespace Com.H.Text.Template2
         /// </example>
         public static string? RenderContent(
             this string content,
-            object? dataModel,
+            object? dataModel = null,
             TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
             => RenderContentAsync(content, dataModel, options, cancellationToken)
@@ -235,7 +235,7 @@ namespace Com.H.Text.Template2
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this string content,
-            object? dataModel,
+            object? dataModel = null,
             TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
             => RenderContentAsync(
@@ -252,7 +252,7 @@ namespace Com.H.Text.Template2
         /// <exception cref="ArgumentNullException"><paramref name="uri"/> is null.</exception>
         public static string? RenderContent(
             this Uri uri,
-            object? dataModel,
+            object? dataModel = null,
             TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
             => RenderContentAsync(uri, dataModel, options, cancellationToken)
@@ -263,7 +263,7 @@ namespace Com.H.Text.Template2
         /// </summary>
         public static Task<string?> RenderContentAsync(
             this Uri uri,
-            object? dataModel,
+            object? dataModel = null,
             TemplateOptions? options = null,
             CancellationToken? cancellationToken = null)
             => RenderContentAsync(uri, provider: null, dataModel, options, cancellationToken);
