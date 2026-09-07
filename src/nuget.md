@@ -509,7 +509,7 @@ dotnet test
 ## How this relates to Com.H
 
 The `2` marks the generation. `Com.H.Text.Template` (a namespace inside the `Com.H` package) is
-the original 2016 engine — still supported, still used by deployed applications. **This package is
+the original engine — still supported. **This package is
 the current one**, with its own engine; it no longer depends on `Com.H` at all. Starting
 something new? Take the highest-numbered `Com.H.Text.Template*` package.
 

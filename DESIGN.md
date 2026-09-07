@@ -29,7 +29,7 @@ The only dependency is `Com.H.Data.Common`.
 
 ## History: this began as glue, and stopped being it
 
-Originally this package was ~300 lines wiring `Com.H`'s 2016 `Com.H.Text.Template` engine to
+Originally this package was ~300 lines wiring `Com.H`'s `Com.H.Text.Template` engine to
 `Com.H.Data.Common`. That engine's extension point had always existed and had never been
 implemented; this package was the implementation.
 
@@ -55,11 +55,6 @@ markers, date placeholders, repeat-per-row semantics — pinned by `LegacyParity
 
 No `if`, no `for`, no expression language. Sorting, filtering, conditional colours, running
 totals, placeholder text for nulls — SQL already does all of it, and more people can read it.
-
-This is not a stylistic preference; it has been load-bearing operationally. A DBA with no
-software-development background built and ran critical automation on the 2016 engine for years,
-and two successive handovers — his, and the supporting DevOps engineer's — absorbed it easily
-because the logic was in SQL. A bespoke template DSL would have cost that.
 
 ## Decisions, and what was rejected
 
@@ -181,12 +176,6 @@ A second `<h-embedded-data>` is an error. The legacy engine silently ignored it 
 rendering its markup from the first block's rows — confusing and undiagnosable. Because a block
 repeats the whole file, composing several queries means one file each, which is also how a
 section is scoped and how it collapses on zero rows.
-
-## Evidence from production usage
-
-Surveyed two deployed reporting engines built on the 2016 engine (2019 and 2022 vintages, serving
-hundreds of reports daily between them) and one live trial of this package in an HTML e-mail
-notification service. Findings that shaped the above:
 
 - **Both reporting engines hand-rolled the provider**, identically, and both routed `PreRender`
   through `DataExtensions.Fill`: textual substitution into SQL, with a live template
