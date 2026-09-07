@@ -178,7 +178,7 @@ var output = await new Uri(@"C:\templates\products.html")
 A block can also point at its query with `src`, which is resolved the same way templates are:
 
 ```html
-<h-embedded-data src="{uri{.}}/queries/products.sql"></h-embedded-data>
+<h-embedded-data src="queries/products.sql"></h-embedded-data>
 <li>{{name}}</li>
 ```
 
@@ -192,7 +192,7 @@ out of the repetition, put the rows in their own file and pull it in with
 <!-- index.html -->
 <table>
     <tr><th>Product</th><th>Price</th></tr>
-    <h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template>
+    <h-embedded-template><![CDATA[rows.html]]></h-embedded-template>
 </table>
 ```
 
@@ -211,9 +211,11 @@ out of the repetition, put the rows in their own file and pull it in with
 <tr><td>Mouse</td><td>15</td></tr></table>
 ```
 
-`{uri{.}}` resolves to the folder of the template doing the including, so nested templates move
-with their parent. Nesting can go as deep as you like, and a nested template's query can bind
-values from its parent's current row.
+A relative path resolves against the folder of the template doing the including, so nested
+templates move with their parent. From any depth, `~/shared/footer.html` reaches the application
+folder (or `TemplateOptions.BasePath`), the way `~/` does in ASP.NET. Absolute paths and `http(s)`
+URLs are used as written. Nesting can go as deep as you like, and a nested template's query can
+bind values from its parent's current row.
 
 ## Example 6 — Logic belongs in the query
 
@@ -305,7 +307,7 @@ give a block its own marker:
     select id, total from invoice where id = {{invoice_id}}
 ]]></h-embedded-data>
 
-<h-embedded-template><![CDATA[{uri{.}}/lines.html]]></h-embedded-template>
+<h-embedded-template><![CDATA[lines.html]]></h-embedded-template>
 ```
 
 ```html
@@ -444,7 +446,7 @@ resolver you supply.
 | Tag | Purpose |
 |---|---|
 | `<h-embedded-data>` | A data block. CDATA content is the query (or `src` names it); the rest of the file is the body, repeated per row. |
-| `<h-embedded-template>` | Includes another template. CDATA content is its URI; `{uri{.}}` is the including file's folder. |
+| `<h-embedded-template>` | Includes another template. CDATA content is its path or URL, relative to the including file (see Paths). |
 
 ### Attributes on `<h-embedded-data>`
 
@@ -466,9 +468,24 @@ Underscores and dashes are interchangeable — `content_type` and `content-type`
 | `{block{name}}` | a value from **only** the block that declared `{block{` |
 | `{html{name}}` / `{url{name}}` | a value, encoded |
 | `{now{fmt}}` `{tomorrow{fmt}}` `{yesterday{fmt}}` | a date, in the current culture |
-| `{uri{.}}` / `{uri{./}}` | the including template's folder |
 
 One close marker (`}}`) for everything; the open marker carries the meaning.
+
+### Paths
+
+An include's CDATA content and a data block's `src` take a path or URL, resolved the way a browser
+resolves `<img src>`:
+
+| Written as | Resolves to |
+|---|---|
+| `rows.html`, `sub/rows.html`, `../shared/rows.html` | relative to the including template's folder |
+| `~/shared/footer.html` | relative to `TemplateOptions.BasePath`, or the application folder when unset, from any depth |
+| `C:\templates\rows.html`, `file:///…`, `https://…` | as written |
+
+A template rendered from a string has no folder of its own, so its relative paths start from
+`BasePath` (or the application folder). `BasePath` itself may be relative, in which case it is
+taken from the application folder, the same rule a configuration file path follows. Markers work
+inside paths: `reports/{{name}}.html`.
 
 ### Things worth knowing
 

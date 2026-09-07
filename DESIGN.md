@@ -192,15 +192,22 @@ section is scoped and how it collapses on zero rows.
 
 ## Deliberate divergences from the legacy engine
 
-Both replace behaviour that was a defect rather than a contract, and both are documented in
-`LegacyParityTests`:
+Each replaces behaviour that was a defect or a workaround rather than a contract, and each is
+documented in `LegacyParityTests`:
 
 1. **Per-key model resolution** instead of whole-model shadowing.
 2. **Unresolved markers collapse to empty** instead of emitting the word `null`.
+3. **Plain relative paths** instead of the `{uri{.}}` placeholder. The original engine passed an
+   include's text straight to `new Uri(...)`, which only accepts absolute URIs, so `{uri{.}}` was
+   the only way a template could name its own folder. This engine resolves a relative path against
+   the including template, `~/` against `TemplateOptions.BasePath` or the application folder, and
+   absolute paths and URLs as written. The placeholder is not recognised at all: it was dropped
+   before the first release, and the one downstream application is migrated by replacing
+   `{uri{.}}/` with nothing.
 
 Everything else — tags, marker syntax, date placeholders, repeat-per-row, zero-rows-collapses,
-`{uri{.}}` resolution, case-insensitive names, current-culture formatting — is unchanged, with
-expected values captured by running the original engine.
+case-insensitive names, current-culture formatting — is unchanged, with expected values captured
+by running the original engine.
 
 ## Open items
 

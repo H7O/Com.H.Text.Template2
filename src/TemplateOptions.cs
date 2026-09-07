@@ -24,10 +24,23 @@ namespace Com.H.Text.Template2
     public sealed class TemplateOptions
     {
         /// <summary>
-        /// Base path for resolving nested template references. Defaults to the application base
-        /// directory. Ignored when rendering from a <see cref="Uri"/>, which resolves relative to
-        /// itself.
+        /// The folder <c>~/</c> stands for in a template path, and where relative paths start
+        /// when there is no including template to start from. Defaults to the application base
+        /// directory.
         /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A template loaded from a file or URL resolves its own relative includes against its
+        /// own folder, the way a web page resolves <c>&lt;img src&gt;</c>; this setting does not
+        /// change that. It is the anchor for <c>~/shared/footer.html</c> from any depth, and the
+        /// starting folder for a template rendered from a string or from a relative
+        /// <see cref="Uri"/>.
+        /// </para>
+        /// <para>
+        /// A relative value (<c>"templates"</c>) is taken from the application base directory, the
+        /// same rule a configuration file path follows. An <c>http(s)</c> URL is accepted too.
+        /// </para>
+        /// </remarks>
         public string? BasePath { get; set; }
 
         /// <summary>Command timeout for embedded queries, in seconds. Null uses the provider default.</summary>

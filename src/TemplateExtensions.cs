@@ -307,10 +307,12 @@ namespace Com.H.Text.Template2
             options ??= TemplateOptions.Default;
             TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
             TemplateEngine.ContentResolver = options.ContentResolver;
+            TemplateEngine.RootUri = ParentPathToUri(options.BasePath);
 
+            // a string has no folder of its own, so its relative includes start from the root
             return await TemplateEngine.RenderAsync(
                 content,
-                ParentPathToUri(options.BasePath),
+                TemplateEngine.RootUri,
                 ToModels(dataModel),
                 Effective(provider, options),
                 options.Referrer,
@@ -352,11 +354,13 @@ namespace Com.H.Text.Template2
             options ??= TemplateOptions.Default;
             TemplateEngine.ThrowOnUnresolvedMarker = options.ThrowOnUnresolvedMarker;
             TemplateEngine.ContentResolver = options.ContentResolver;
+            TemplateEngine.RootUri = ParentPathToUri(options.BasePath);
 
             var ct = cancellationToken ?? CancellationToken.None;
             var models = ToModels(dataModel);
 
-            // the URI itself may carry markers, e.g. .../reports/{{reportName}}.html
+            // the URI itself may carry markers, e.g. .../reports/{{reportName}}.html, and a
+            // relative one ("~/reports/x.html" or "reports/x.html") starts from the root
             var resolved = TemplateEngine.ResolveUri(uri.OriginalString, null, models);
 
             // the root template was introduced by no tag, so it has no attributes of its own
@@ -416,19 +420,34 @@ namespace Com.H.Text.Template2
         private static List<DbQueryParams> ToModels(object? dataModel)
             => new List<DbQueryParams> { new DbQueryParams { DataModel = dataModel } };
 
+        /// <summary>
+        /// Turns <see cref="TemplateOptions.BasePath"/> into the folder URI the engine resolves
+        /// against. A relative folder is taken from the application base directory, the same
+        /// rule a configuration file path follows, so <c>BasePath = "templates"</c> works.
+        /// </summary>
         private static Uri? ParentPathToUri(string? path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
+            path = path!.Trim();
 
-            // a base path always denotes a directory, so it needs a trailing separator for
-            // relative resolution — http(s) bases included, or the last segment is discarded
-            if (!path!.EndsWith("/", StringComparison.Ordinal)
-                && !path.EndsWith("\\", StringComparison.Ordinal))
+            if (Uri.TryCreate(path, UriKind.Absolute, out var asUri))
             {
-                path += Uri.TryCreate(path, UriKind.Absolute, out var asUri) && !asUri.IsFile
-                    ? '/'
-                    : Path.DirectorySeparatorChar;
+                // an http(s) base is a directory, so it needs the trailing slash or relative
+                // resolution discards its last segment
+                if (!asUri.IsFile)
+                    return new Uri(path.EndsWith("/", StringComparison.Ordinal) ? path : path + "/");
+                path = asUri.LocalPath;
             }
+            else if (!Path.IsPathRooted(path))
+            {
+                path = Path.Combine(AppContext.BaseDirectory, path);
+            }
+
+            path = Path.GetFullPath(path);
+            if (!path.EndsWith("/", StringComparison.Ordinal)
+                && !path.EndsWith("\\", StringComparison.Ordinal))
+                path += Path.DirectorySeparatorChar;
+
             return new Uri(path);
         }
 

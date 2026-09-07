@@ -68,7 +68,7 @@ public class DocumentationExamplesTests : IDisposable
             "<h-embedded-data marker=\"{invoice{\"><![CDATA["
             + "select id, total from invoice where id = {{invoice_id}}"
             + "]]></h-embedded-data>"
-            + "<h-embedded-template><![CDATA[{uri{.}}/lines.html]]></h-embedded-template>");
+            + "<h-embedded-template><![CDATA[lines.html]]></h-embedded-template>");
 
         var output = new Uri(index).RenderContent(_connection, new { invoice_id = 1 });
 
@@ -171,7 +171,7 @@ public class DocumentationExamplesTests : IDisposable
         var index = Write("index.html",
             "<table>"
             + "<tr><th>Product</th><th>Price</th></tr>"
-            + "<h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template>"
+            + "<h-embedded-template><![CDATA[rows.html]]></h-embedded-template>"
             + "</table>");
 
         var output = new Uri(index).RenderContent(_connection);
@@ -197,7 +197,7 @@ public class DocumentationExamplesTests : IDisposable
             + "<tr bgcolor=\"{{row_colour}}\"><td>{{name}}</td></tr>");
 
         var index = Write("index.html",
-            "<table><h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template></table>");
+            "<table><h-embedded-template><![CDATA[rows.html]]></h-embedded-template></table>");
 
         var output = new Uri(index).RenderContent(_connection);
 
@@ -243,7 +243,7 @@ public class DocumentationExamplesTests : IDisposable
 
         var index = Write("index.html",
             "<h1>Catalogue</h1>"
-            + "<ul><h-embedded-template><![CDATA[{uri{.}}/offers.html]]></h-embedded-template></ul>"
+            + "<ul><h-embedded-template><![CDATA[offers.html]]></h-embedded-template></ul>"
             + "<footer>end</footer>");
 
         var withRows = new Uri(index).RenderContent(_connection, new { category = "Displays" });
@@ -329,7 +329,7 @@ public class DocumentationExamplesTests : IDisposable
         Write("rows.html",
             "<h-embedded-data><![CDATA[select name from products]]></h-embedded-data><li>{{name}}</li>");
         var index = Write("index.html",
-            "<ul><h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template></ul>");
+            "<ul><h-embedded-template><![CDATA[rows.html]]></h-embedded-template></ul>");
 
         Assert.ThrowsAny<Exception>(() =>
             new Uri(index).RenderContent(new { name = "x" }, new TemplateOptions { ThrowIfQueryPresent = true }));
@@ -341,7 +341,7 @@ public class DocumentationExamplesTests : IDisposable
         Write("rows.html",
             "<h-embedded-data><![CDATA[select name from products]]></h-embedded-data><li>{{name}}</li>");
         var index = Write("index.html",
-            "<ul><h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template></ul>");
+            "<ul><h-embedded-template><![CDATA[rows.html]]></h-embedded-template></ul>");
 
         Assert.Equal("<ul><li>Placeholder</li></ul>",
             new Uri(index).RenderContent(new { name = "Placeholder" }));
@@ -404,7 +404,7 @@ public class DocumentationExamplesTests : IDisposable
             "<h-embedded-data><![CDATA[select name from products order by name]]></h-embedded-data>"
             + "<tr><td>{{name}}</td></tr>");
         var index = Write("index.html",
-            "<table><h-embedded-template><![CDATA[{uri{.}}/rows.html]]></h-embedded-template></table>");
+            "<table><h-embedded-template><![CDATA[rows.html]]></h-embedded-template></table>");
 
         var output = await new Uri(index).RenderContentAsync(_connection);
 
@@ -418,12 +418,89 @@ public class DocumentationExamplesTests : IDisposable
     [Fact]
     public void RelativeIncludePaths_ResolveAgainstTheParentTemplate()
     {
-        // {uri{.}} still works; plain relative paths are the new, simpler form
         Write("sub/part.html", "[part {{name}}]");
         var index = Write("index.html",
             "A<h-embedded-template><![CDATA[sub/part.html]]></h-embedded-template>B");
 
         Assert.Equal("A[part Ali]B", new Uri(index).RenderContent(new { name = "Ali" }));
+    }
+
+    [Fact]
+    public void RelativeIncludePaths_CanClimbToASiblingFolder()
+    {
+        Write("shared/rows.html", "[shared]");
+        var index = Write("mail/index.html",
+            "A<h-embedded-template><![CDATA[../shared/rows.html]]></h-embedded-template>B");
+
+        Assert.Equal("A[shared]B", new Uri(index).RenderContent(new { }));
+    }
+
+    [Fact]
+    public void AbsoluteIncludePaths_AreUsedAsWritten()
+    {
+        var elsewhere = Write("elsewhere/abs.html", "[abs]");
+        var index = Write("mail/index.html",
+            "A<h-embedded-template><![CDATA[" + elsewhere + "]]></h-embedded-template>B");
+
+        Assert.Equal("A[abs]B", new Uri(index).RenderContent(new { }));
+    }
+
+    [Fact]
+    public void TildePaths_ReachTheBasePathFromAnyDepth()
+    {
+        // three levels down, the template still finds a partial kept beside the root
+        Write("shared/footer.html", "[footer]");
+        var index = Write("mail/invoices/monthly/index.html",
+            "A<h-embedded-template><![CDATA[~/shared/footer.html]]></h-embedded-template>B");
+
+        var output = new Uri(index).RenderContent(new { }, new TemplateOptions { BasePath = _dir });
+
+        Assert.Equal("A[footer]B", output);
+    }
+
+    [Fact]
+    public void TildePaths_DefaultToTheApplicationFolder()
+    {
+        var folder = "comh_tilde_" + Guid.NewGuid().ToString("N")[..8];
+        var appSub = Path.Combine(AppContext.BaseDirectory, folder);
+        Directory.CreateDirectory(appSub);
+        try
+        {
+            File.WriteAllText(Path.Combine(appSub, "part.html"), "[app]");
+            var template = "A<h-embedded-template><![CDATA[~/" + folder + "/part.html]]></h-embedded-template>B";
+
+            Assert.Equal("A[app]B", template.RenderContent(new { }));
+        }
+        finally { try { Directory.Delete(appSub, true); } catch { } }
+    }
+
+    [Fact]
+    public void BasePath_AcceptsAFolderRelativeToTheApplication()
+    {
+        // the same rule a configuration file path follows: relative means "from the app folder"
+        var folder = "comh_base_" + Guid.NewGuid().ToString("N")[..8];
+        var appSub = Path.Combine(AppContext.BaseDirectory, folder);
+        Directory.CreateDirectory(appSub);
+        try
+        {
+            File.WriteAllText(Path.Combine(appSub, "part.html"), "[base]");
+            var template = "A<h-embedded-template><![CDATA[part.html]]></h-embedded-template>B";
+
+            Assert.Equal("A[base]B",
+                template.RenderContent(new { }, new TemplateOptions { BasePath = folder }));
+        }
+        finally { try { Directory.Delete(appSub, true); } catch { } }
+    }
+
+    [Fact]
+    public void RelativeRootUri_StartsFromTheBasePath()
+    {
+        Write("reports/index.html", "[report {{name}}]");
+
+        var output = new Uri("~/reports/index.html", UriKind.Relative)
+            .RenderContent(new { name = "Q3" }, new TemplateOptions { BasePath = _dir });
+
+        Assert.Equal("[report Q3]", output);
     }
 
     [Fact]

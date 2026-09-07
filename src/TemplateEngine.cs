@@ -589,32 +589,51 @@ namespace Com.H.Text.Template2
         // ------------------------------------------------------------------ URIs & fetching
 
         /// <summary>
-        /// Resolves a template-supplied URI: <c>{uri{.}}</c>/<c>{uri{./}}</c> placeholders, then
-        /// data-model markers, then — new to this engine — plain relative paths against the
-        /// including template's location.
+        /// The folder <c>~/</c> stands for, and the starting point for relative paths when there
+        /// is no including template to start from: <see cref="TemplateOptions.BasePath"/> when
+        /// set, otherwise the application base directory. Ambient for the same reason as
+        /// <see cref="ThrowOnUnresolvedMarker"/>.
+        /// </summary>
+        private static readonly AsyncLocal<Uri?> Root = new();
+
+        internal static Uri? RootUri
+        {
+            get => Root.Value;
+            set => Root.Value = value;
+        }
+
+        /// <summary>
+        /// Resolves a template-supplied path or URL the way a browser resolves <c>&lt;img src&gt;</c>:
+        /// data-model markers are filled first, then a relative path is taken against the
+        /// including template's folder, <c>~/</c> against <see cref="RootUri"/>, and anything
+        /// absolute — a rooted path, <c>file:</c>, <c>http(s):</c> — as written.
         /// </summary>
         internal static Uri ResolveUri(string uriText, Uri? parentUri, List<DbQueryParams> models)
         {
-            var parent = parentUri ?? new Uri(AppendSlash(AppContext.BaseDirectory));
-            var parentText = parent.AbsoluteUri;
-            if (!parentText.EndsWith("/", StringComparison.Ordinal)) parentText += "/";
+            uriText = uriText.Trim();
 
-            uriText = uriText
-                .Replace("{uri{./}}", parentText)
-                .Replace("{uri{.}}", parentText.Substring(0, parentText.Length - 1));
+            var root = RootUri ?? new Uri(AppendSlash(AppContext.BaseDirectory));
+
+            if (uriText.StartsWith("~/", StringComparison.Ordinal)
+                || uriText.StartsWith("~\\", StringComparison.Ordinal))
+            {
+                var underRoot = FillModels(uriText.Substring(2), models).Trim();
+                if (Uri.TryCreate(root, underRoot, out var rooted)) return rooted;
+                throw new FormatException($"Invalid template uri: {uriText}");
+            }
 
             uriText = FillModels(uriText, models).Trim();
 
             if (Uri.TryCreate(uriText, UriKind.Absolute, out var absolute)) return absolute;
-            if (Uri.TryCreate(parent, uriText, out var relative)) return relative;
+            if (Uri.TryCreate(parentUri ?? root, uriText, out var relative)) return relative;
 
             throw new FormatException($"Invalid template uri: {uriText}");
         }
-
 
         private static string AppendSlash(string path)
             => path.EndsWith("/", StringComparison.Ordinal)
                || path.EndsWith("\\", StringComparison.Ordinal)
                 ? path
-                : path + Path.DirectorySeparatorChar;    }
+                : path + Path.DirectorySeparatorChar;
+    }
 }

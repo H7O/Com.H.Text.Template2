@@ -10,8 +10,8 @@ namespace Com.H.Text.Template2.Tests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Two <b>deliberate</b> divergences, both replacing behaviour that was a defect rather than a
-/// contract:
+/// Three <b>deliberate</b> divergences, each replacing behaviour that was a defect or a
+/// workaround rather than a contract:
 /// </para>
 /// <para>
 /// <b>1. Model-chain resolution</b> (see <c>ModelChainTests</c>). Markers now resolve per key,
@@ -26,6 +26,12 @@ namespace Com.H.Text.Template2.Tests;
 /// says so in its query (<c>coalesce</c>), where the meaning is known — so the
 /// <c>null-value</c> attribute is gone with it. Set
 /// <c>TemplateOptions.ThrowOnUnresolvedMarker</c> in development to make the silence loud.
+/// </para>
+/// <para>
+/// <b>3. Plain relative include paths</b>. The original passed an include's text straight to
+/// <c>new Uri(...)</c>, which only accepts absolute URIs, so templates named their own folder
+/// with a <c>{uri{.}}</c> placeholder. This engine resolves <c>rows.html</c> against the including
+/// template and <c>~/shared/x.html</c> against the base path; the placeholder is not recognised.
 /// </para>
 /// </remarks>
 public class LegacyParityTests : IDisposable
@@ -108,12 +114,29 @@ public class LegacyParityTests : IDisposable
         Assert.Equal("x=Ali", "x={{NAME}}".RenderContent(new { name = "Ali" }));
     }
 
+    // ---- divergence 3: the {uri{.}} placeholder is gone; relative paths replace it ----
+
+    [Fact]
+    public void UriPlaceholder_IsNotRecognised()
+    {
+        Write("part.txt", "CHILD");
+        var main = Write("m.txt",
+            "<h-embedded-template><![CDATA[{uri{.}}/part.txt]]></h-embedded-template>");
+
+        // the text is taken literally, as a folder named {uri{.}}, which does not exist
+        Assert.ThrowsAny<Exception>(() => new Uri(main).RenderContent(new { }));
+
+        var migrated = Write("m2.txt",
+            "<h-embedded-template><![CDATA[part.txt]]></h-embedded-template>");
+        Assert.Equal("CHILD", new Uri(migrated).RenderContent(new { }));
+    }
+
     [Fact]
     public void Marker_InsideNestedTemplateUri_IsFilled()
     {
         Write("part_X.txt", "CHILD-X");
         var main = Write("m.txt",
-            "<h-embedded-template><![CDATA[{uri{.}}/part_{{suffix}}.txt]]></h-embedded-template>");
+            "<h-embedded-template><![CDATA[part_{{suffix}}.txt]]></h-embedded-template>");
 
         Assert.Equal("CHILD-X", new Uri(main).RenderContent(new { suffix = "X" }));
     }
@@ -127,7 +150,7 @@ public class LegacyParityTests : IDisposable
             "<h-embedded-data><![CDATA[select email from users where code = {{code}} and email is not null]]></h-embedded-data><e>{{email}}</e>");
         var main = Write("main.txt",
             "<h-embedded-data><![CDATA[select code, name from users order by name]]></h-embedded-data>"
-            + "<row>{{name}}:<h-embedded-template><![CDATA[{uri{.}}/detail.txt]]></h-embedded-template></row>");
+            + "<row>{{name}}:<h-embedded-template><![CDATA[detail.txt]]></h-embedded-template></row>");
 
         Assert.Equal("<row>Ali:</row><row>Sara:<e>sara@x.com</e></row>",
             new Uri(main).RenderContent(_conn));

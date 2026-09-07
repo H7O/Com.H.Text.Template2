@@ -178,7 +178,7 @@ public class MarkerPatternTests : IDisposable
             var main = Path.Combine(dir, "main.txt");
             File.WriteAllText(main,
                 "<h-embedded-data marker=\"{outer{\"><![CDATA[select name from t]]></h-embedded-data>"
-                + "<h-embedded-template><![CDATA[{uri{.}}/child.txt]]></h-embedded-template>");
+                + "<h-embedded-template><![CDATA[child.txt]]></h-embedded-template>");
 
             Assert.Equal("[ROW|CHILD]", new Uri(main).RenderContent(_conn));
         }

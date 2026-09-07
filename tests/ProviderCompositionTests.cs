@@ -142,7 +142,7 @@ public class ProviderCompositionTests : IDisposable
                 return new ValueTask<string?>(
                     uri.LocalPath.EndsWith("child.txt", StringComparison.OrdinalIgnoreCase)
                         ? "[child:{{name}}]"
-                        : "<h-embedded-template><![CDATA[{uri{.}}/child.txt]]></h-embedded-template>");
+                        : "<h-embedded-template><![CDATA[child.txt]]></h-embedded-template>");
             }
         };
 
@@ -162,7 +162,7 @@ public class ProviderCompositionTests : IDisposable
         File.WriteAllText(child, "REAL-CHILD");
         var main = Path.Combine(_dir, "main.txt");
         File.WriteAllText(main,
-            "<h-embedded-template><![CDATA[{uri{.}}/child.txt]]></h-embedded-template>");
+            "<h-embedded-template><![CDATA[child.txt]]></h-embedded-template>");
 
         var options = new TemplateOptions
         {
