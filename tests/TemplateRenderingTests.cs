@@ -21,7 +21,7 @@ public class TemplateRenderingTests : IDisposable
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = """
             create table users (name text, email text, country text);
-            insert into users values ('Ali',  'ali@example.com',  'JO');
+            insert into users values ('John',  'ali@example.com',  'JO');
             insert into users values ('Sara', 'sara@example.com', 'JO');
             insert into users values ('Yuki', 'yuki@example.com', 'JP');
             """;
@@ -43,7 +43,7 @@ public class TemplateRenderingTests : IDisposable
         var result = template.RenderContent(_connection, new { country = "JO" });
 
         Assert.NotNull(result);
-        Assert.Contains("Ali", result);
+        Assert.Contains("John", result);
         Assert.Contains("Sara", result);
         Assert.DoesNotContain("Yuki", result);
     }
@@ -71,7 +71,7 @@ public class TemplateRenderingTests : IDisposable
         var result = template.RenderContent(_connection, new { country = "ZZ" });
 
         Assert.NotNull(result);
-        Assert.DoesNotContain("Ali", result);
+        Assert.DoesNotContain("John", result);
         Assert.DoesNotContain("Yuki", result);
     }
 
@@ -89,7 +89,7 @@ public class TemplateRenderingTests : IDisposable
         // Positive control first: without it, the assertions below would also pass if
         // rendering silently produced nothing at all.
         var legitimate = template.RenderContent(_connection, new { country = "JO" });
-        Assert.Equal("<li>Ali</li><li>Sara</li>", legitimate);
+        Assert.Equal("<li>John</li><li>Sara</li>", legitimate);
 
         // If the value were substituted into the SQL as text, this would close the string
         // literal and make the predicate always true, leaking every row.
@@ -133,7 +133,7 @@ public class TemplateRenderingTests : IDisposable
         var result = template.RenderContent(_connection, new { country = "{{name}}" });
 
         Assert.NotNull(result);
-        Assert.DoesNotContain("Ali", result);
+        Assert.DoesNotContain("John", result);
     }
 
     [Fact]
@@ -172,7 +172,7 @@ public class TemplateRenderingTests : IDisposable
 
         var result = template.RenderContent(_connection, new { country = "JO" });
 
-        Assert.Contains("Ali", result);
+        Assert.Contains("John", result);
     }
 
     // ---------------------------------------------------------------------

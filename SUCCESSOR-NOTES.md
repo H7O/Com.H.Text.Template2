@@ -13,7 +13,7 @@ a successor was built into it instead.
 
 ## Read this first: the successor already happened
 
-An earlier version of this file planned Template3 as "the radical departure from the 2016
+An earlier version of this file planned Template3 as "the radical departure from the original
 engine." That departure is Template2. It has its own engine, no `Com.H` dependency, native async,
 and pluggable data sources. `DESIGN.md` records what was decided and what was rejected.
 
@@ -42,22 +42,20 @@ unambiguous wins.
 
 **SQL is a first-class citizen, not an implementation detail to abstract away.**
 
-The evidence is not theoretical. A **DBA with no software-development background** built massive
-critical automation on the 2016 engine — scheduled calculations, CSV to SFTP for downstream
-systems, PDF reports to management. When he left, his successor picked it up easily. When the
-supporting DevOps engineer left, so did his. Both because they knew SQL.
-
-That is a decade of operational continuity bought by not inventing a syntax. It also shortens
-reasoning time for AI agents, which already know SQL and would have to be taught a DSL.
+The evidence is practical, not theoretical. People whose skill is SQL rather than software
+development can build substantial automation on this engine — scheduled calculations, file
+exports, formatted reports — and hand it to anyone else who knows SQL. That continuity is bought
+by not inventing a syntax. It also shortens reasoning time for AI agents, which already know SQL
+and would have to be taught a DSL.
 
 **SQL for logic, the output format for presentation.** Do not fuse them.
 
 ## The question Template2 answered — and the answer
 
-*Does the engine get any logic constructs?* **No**, and it has now been used in anger without
-them. `case when` covers conditional formatting, `coalesce` covers placeholder text, an empty
-result set covers "hide this section", and nesting covers scoping. Nothing in the package's first
-consumer or in either production reporting engine needed a template-level `if`.
+*Does the engine get any logic constructs?* **No**, and real templates have not needed them.
+`case when` covers conditional formatting, `coalesce` covers placeholder text, an empty result
+set covers "hide this section", and nesting covers scoping. None of the templates this engine was
+built against needed a template-level `if`.
 
 Treat that as settled unless a concrete case appears that SQL genuinely cannot express — and
 write the case down before designing for it.
@@ -96,11 +94,11 @@ alternatives, and the test suite is the specification: `LegacyParityTests` (the 
 contract), `SecurityTests` (injection properties), `ModelChainTests` and `MarkerPatternTests`
 (resolution rules), `DocumentationExamplesTests` (every README example, executed).
 
-### The newest application in the family — how we build applications now
+### Application patterns a successor should copy
 
-Worth noting it does **not** use the templating engine at all. When built from scratch with
-current practices, the engine wasn't reached for. That is evidence about fit. What it does have,
-and what a successor should copy:
+These come from a recent DI-first application built with current practices. It does **not** use
+the templating engine at all, which is itself evidence about fit. What it does have, and what a
+successor should copy:
 
 | Pattern | What to take |
 |---|---|
@@ -110,10 +108,10 @@ and what a successor should copy:
 | a numbered middleware pipeline | an explicitly ordered, numbered pipeline |
 | an HTTP executor module | module shape: public interface + `Options` + `Models/` + `Internal/` + DI registration |
 
-### The deployed legacy reporting engines — what production needs
+### Templates written for the original engine — what a report actually needs
 
-The requirements list, not a design to copy. Their busiest templates and their master-detail
-specimens (a main template including a rows template) show what real reports need.
+The requirements list, not a design to copy. Master-detail — a main template including a rows
+template — is the shape that matters most, and the one every generation has to get right.
 
 ### `Com.H.Threading.Scheduler` — what *not* to repeat
 
@@ -126,14 +124,13 @@ database as parameters, with no textual route available even as an option.
 ## Constraints that still hold
 
 - **`TemplateMultiDataRequest`'s `ConnectionString` / `ContentType` / `PreRender` cannot be
-  removed from `Com.H`** — deployed reporting engines read all three. See the NOTE at the top of
-  `Com.H/src/Text/Template/TemplateExtensions.cs`. Template2 sidesteps this by not depending on
-  `Com.H` at all.
-- **The 2016 security posture was of its era.** Corporate sites were plain HTTP; plaintext
-  connection strings in a backend config were not an obvious concern. Context, not a lapse to
-  litigate.
-- **Marker syntax is permanent.** `open-marker="{v1{"` has been carried for a decade. Whatever a
-  successor chooses, it will live just as long.
+  removed from `Com.H`** — existing consumers of the original engine read all three. See the NOTE
+  at the top of `Com.H/src/Text/Template/TemplateExtensions.cs`. Template2 sidesteps this by not
+  depending on `Com.H` at all.
+- **The original engine's security posture was of its era.** A plaintext connection string
+  inside a template was not then an obvious concern. Context, not a lapse to litigate.
+- **Marker syntax is permanent.** `open-marker="{v1{"` is in existing templates and stays
+  supported. Whatever a successor chooses will live just as long.
 
 ## If the exercise ever runs
 

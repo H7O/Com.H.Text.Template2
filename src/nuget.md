@@ -11,9 +11,9 @@ already know how to express it.
 using Com.H.Text.Template2;
 
 var output = "Hello {{name}}, you have {{count}} new messages."
-    .RenderContent(new { name = "Ali", count = 3 });
+    .RenderContent(new { name = "John", count = 3 });
 
-// Hello Ali, you have 3 new messages.
+// Hello John, you have 3 new messages.
 ```
 
 Add a query and the template repeats once per row:
@@ -56,11 +56,11 @@ The simplest use needs no database at all.
 
 ```csharp
 var output = "Hello {{name}}, you have {{count}} new messages."
-    .RenderContent(new { name = "Ali", count = 3 });
+    .RenderContent(new { name = "John", count = 3 });
 ```
 
 ```
-Hello Ali, you have 3 new messages.
+Hello John, you have 3 new messages.
 ```
 
 The data model can be an anonymous object, a `Dictionary<string, object>`, a JSON string, a
@@ -80,11 +80,11 @@ render in the current culture.
 ```csharp
 // greeting.txt:  Hello {{name}}, welcome back.
 
-var output = new Uri(@"C:\templates\greeting.txt").RenderContent(new { name = "Ali" });
+var output = new Uri(@"C:\templates\greeting.txt").RenderContent(new { name = "John" });
 ```
 
 ```
-Hello Ali, welcome back.
+Hello John, welcome back.
 ```
 
 `http://` and `https://` URLs work too — and anything else you like, via

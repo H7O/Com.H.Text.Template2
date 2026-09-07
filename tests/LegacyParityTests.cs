@@ -22,7 +22,7 @@ namespace Com.H.Text.Template2.Tests;
 /// </para>
 /// <para>
 /// <b>2. Unresolved markers collapse to empty</b>. The original emitted the literal word
-/// <c>null</c>, which reached readers of production emails. A template wanting placeholder text
+/// <c>null</c>, which reached readers of the rendered output. A template wanting placeholder text
 /// says so in its query (<c>coalesce</c>), where the meaning is known — so the
 /// <c>null-value</c> attribute is gone with it. Set
 /// <c>TemplateOptions.ThrowOnUnresolvedMarker</c> in development to make the silence loud.
@@ -46,7 +46,7 @@ public class LegacyParityTests : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = """
             create table users (code text, name text, email text);
-            insert into users values ('A1','Ali', null);
+            insert into users values ('A1','John', null);
             insert into users values ('B2','Sara','sara@x.com');
             """;
         cmd.ExecuteNonQuery();
@@ -68,16 +68,16 @@ public class LegacyParityTests : IDisposable
     [Fact]
     public void UnmatchedMarker_CollapsesToEmpty()
     {
-        // was "a=Ali b=null" on the original engine
-        Assert.Equal("a=Ali b=",
-            "a={{name}} b={{missing}}".RenderContent(new { name = "Ali" }));
+        // was "a=John b=null" on the original engine
+        Assert.Equal("a=John b=",
+            "a={{name}} b={{missing}}".RenderContent(new { name = "John" }));
     }
 
     [Fact]
     public void NullColumnValue_CollapsesToEmpty()
     {
         var t = "<h-embedded-data><![CDATA[select name, email from users order by name]]></h-embedded-data>[{{name}}:{{email}}]";
-        Assert.Equal("[Ali:][Sara:sara@x.com]", t.RenderContent(_conn));
+        Assert.Equal("[John:][Sara:sara@x.com]", t.RenderContent(_conn));
     }
 
     [Fact]
@@ -87,7 +87,7 @@ public class LegacyParityTests : IDisposable
         var t = "<h-embedded-data><![CDATA["
               + "select name, coalesce(email, '(none)') as email from users order by name"
               + "]]></h-embedded-data>[{{name}}:{{email}}]";
-        Assert.Equal("[Ali:(none)][Sara:sara@x.com]", t.RenderContent(_conn));
+        Assert.Equal("[John:(none)][Sara:sara@x.com]", t.RenderContent(_conn));
     }
 
     [Fact]
@@ -105,13 +105,13 @@ public class LegacyParityTests : IDisposable
     public void RowValue_WinsOverOuterModel_OnSameKey()
     {
         var t = "<h-embedded-data><![CDATA[select name from users where code = {{code}}]]></h-embedded-data>[{{name}}]";
-        Assert.Equal("[Ali]", t.RenderContent(_conn, new { code = "A1", name = "Outer" }));
+        Assert.Equal("[John]", t.RenderContent(_conn, new { code = "A1", name = "Outer" }));
     }
 
     [Fact]
     public void MarkerNames_AreCaseInsensitive()
     {
-        Assert.Equal("x=Ali", "x={{NAME}}".RenderContent(new { name = "Ali" }));
+        Assert.Equal("x=John", "x={{NAME}}".RenderContent(new { name = "John" }));
     }
 
     // ---- divergence 3: the {uri{.}} placeholder is gone; relative paths replace it ----
@@ -144,24 +144,24 @@ public class LegacyParityTests : IDisposable
     [Fact]
     public void MasterDetail_ParentRowValueBindsInChildQuery()
     {
-        // the defining reporting-engine pattern: the child template's query binds {{code}} from
-        // the PARENT's current row, and a child with zero rows collapses (Ali has no email)
+        // the defining master-detail pattern: the child template's query binds {{code}} from
+        // the PARENT's current row, and a child with zero rows collapses (John has no email)
         Write("detail.txt",
             "<h-embedded-data><![CDATA[select email from users where code = {{code}} and email is not null]]></h-embedded-data><e>{{email}}</e>");
         var main = Write("main.txt",
             "<h-embedded-data><![CDATA[select code, name from users order by name]]></h-embedded-data>"
             + "<row>{{name}}:<h-embedded-template><![CDATA[detail.txt]]></h-embedded-template></row>");
 
-        Assert.Equal("<row>Ali:</row><row>Sara:<e>sara@x.com</e></row>",
+        Assert.Equal("<row>John:</row><row>Sara:<e>sara@x.com</e></row>",
             new Uri(main).RenderContent(_conn));
     }
 
     [Fact]
     public void AsymmetricMarkers_OpenOverriddenCloseDefaulted()
     {
-        // production templates set open-marker="{v1{" and leave close at "}}"
+        // templates written for the original engine set open-marker="{v1{" and leave close at "}}"
         var t = "<h-embedded-data marker=\"{v1{\"><![CDATA[select name from users order by name]]></h-embedded-data>name={v1{name}} ";
-        Assert.Equal("name=Ali name=Sara ", t.RenderContent(_conn));
+        Assert.Equal("name=John name=Sara ", t.RenderContent(_conn));
     }
 
     [Fact]
@@ -186,7 +186,7 @@ public class LegacyParityTests : IDisposable
     public void EachRow_RepeatsTheWholeFile()
     {
         var t = "BEFORE<h-embedded-data><![CDATA[select name from users order by name]]></h-embedded-data>[{{name}}]AFTER";
-        Assert.Equal("BEFORE[Ali]AFTERBEFORE[Sara]AFTER", t.RenderContent(_conn));
+        Assert.Equal("BEFORE[John]AFTERBEFORE[Sara]AFTER", t.RenderContent(_conn));
     }
 
     [Fact]
@@ -196,7 +196,7 @@ public class LegacyParityTests : IDisposable
         // attribute names still normalise '_' to '-'
         var t = "<h-embedded-data content_type=\"sql\"><![CDATA[select name from users order by name]]>"
               + "</h-embedded-data>[{{name}}]";
-        Assert.Equal("[Ali][Sara]", t.RenderContent(_conn));
+        Assert.Equal("[John][Sara]", t.RenderContent(_conn));
     }
 
     [Fact]

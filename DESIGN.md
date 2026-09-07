@@ -75,9 +75,9 @@ filling anything, and fills in a single left-to-right pass.
 `{{name}}` searches the current row, then enclosing rows, then the caller's model. A row value
 wins a name both have; a caller value the row lacks stays reachable.
 
-The original engine did not do this, and it produced a silent failure in production: a template
-mixing caller values with query results rendered the caller's values as empty. Verified against
-`Com.H` 10.2.0 — `Fill([outer, row])` returned `"name=Ali url="`, losing the URL entirely.
+The original engine did not do this, and the failure was silent: a template mixing caller
+values with query results rendered the caller's values as empty. Verified against
+`Com.H` 10.2.0 — `Fill([outer, row])` returned `"name=John url="`, losing the URL entirely.
 
 This is the same per-key merge `Com.H.Data.Common`'s `ReduceToUnique` applies to query
 parameters, which is why `{{id}}` always bound correctly *inside* a query while failing in the
@@ -109,10 +109,10 @@ the silence loud in development.
 
 That check is a typo detector, so it fires only for a name **no** model in scope declares. A name
 a model declares with a null value — a `LEFT JOIN` with no match, say — renders as an empty
-string even in strict mode, because a NULL is data, not a mistake. The first consumer to run
-strict mode in development hit exactly that on legitimate rows, and an error there would have
-pushed the switch off in development, which is the only place it earns its keep. (2026-09-05;
-pinned by the strict-mode tests in `ModelChainTests`.)
+string even in strict mode, because a NULL is data, not a mistake. Strict mode run against real
+data would otherwise fire on legitimate rows, and an error there would push the switch off in
+development, which is the only place it earns its keep. (2026-09-05; pinned by the strict-mode
+tests in `ModelChainTests`.)
 
 ### Rows are materialised, not streamed
 
@@ -121,7 +121,7 @@ pinned by the strict-mode tests in `ModelChainTests`.)
 This is required, not merely convenient. In master-detail, a parent's rows repeat the template
 while a *nested* template runs its own query on the same connection. A still-open parent reader
 would throw *"There is already an open DataReader associated with this Connection."* Streaming
-would break the defining reporting-engine pattern. A template also builds its whole document in
+would break master-detail, the pattern the engine exists for. A template also builds its whole document in
 memory regardless, so there is nothing to give up.
 
 ### Separate providers plus a composer, not one that does everything
@@ -167,8 +167,9 @@ A template's `connection-string` attribute is ignored. A template is data, and d
 point the application at an arbitrary database. Since the connection now comes from a factory,
 this is structural rather than a policy the engine could be talked out of.
 
-Production templates did carry connection strings — with passwords, in plaintext, in files that
-get deployed. Honouring them is opt-in: read the attribute in your own factory.
+Templates written for the original engine can carry connection strings — passwords included, in
+plaintext, in files that get deployed. Honouring them is opt-in: read the attribute in your own
+factory.
 
 ### One data block per file
 
@@ -177,18 +178,21 @@ rendering its markup from the first block's rows — confusing and undiagnosable
 repeats the whole file, composing several queries means one file each, which is also how a
 section is scoped and how it collapses on zero rows.
 
-- **Both reporting engines hand-rolled the provider**, identically, and both routed `PreRender`
-  through `DataExtensions.Fill`: textual substitution into SQL, with a live template
-  interpolating `{{name}}` *inside a quoted SQL literal*.
-- **Neither used the legacy engine's default provider.** Its
-  `Assembly.Load("Com.H.EF.Relational")` reflection targets a class that no longer exists, so it
-  always throws.
-- **`connection-string` is a tag attribute**, set per block, credentials included.
-- **Markers may be asymmetric** — `open-marker="{v1{"` with the close left at `}}`.
-- **The e-mail service hit the model-shadowing bug**, worked around it by selecting a caller
-  value into the query, and reported it. That workaround is no longer needed.
-- **The e-mail service also had no HTML escaping available** and was about to add an
-  HTML-encoding SQL function. That produced `{html{…}}` and `{url{…}}`.
+### Rough edges of the original engine, and their answers here
+
+- **The provider had to be hand-rolled**, and `pre-render` went through textual substitution
+  into SQL — `{{name}}` interpolated *inside a quoted SQL literal*. Values now reach the database
+  only as parameters; there is no textual route.
+- **The default provider always threw.** Its `Assembly.Load("Com.H.EF.Relational")` reflection
+  targets a class that no longer exists. This engine loads nothing by reflection.
+- **`connection-string` was a per-block tag attribute**, credentials included. It is ignored now
+  (see "Templates do not choose the database").
+- **Markers may be asymmetric** — `open-marker="{v1{"` with the close left at `}}`. Still
+  supported.
+- **Model shadowing** forced the workaround of selecting a caller's value into the query so the
+  row would carry it. Per-key resolution makes that unnecessary.
+- **No HTML escaping existed**, which pushed encoding towards SQL functions. `{html{…}}` and
+  `{url{…}}` put it where the output format is known.
 
 ## Deliberate divergences from the legacy engine
 

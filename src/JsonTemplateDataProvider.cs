@@ -28,7 +28,7 @@ namespace Com.H.Text.Template2
     /// Inline data:
     /// <code>
     /// &lt;h-embedded-data content-type="json"&gt;&lt;![CDATA[
-    ///   [ { "name": "Ali" }, { "name": "Sara" } ]
+    ///   [ { "name": "John" }, { "name": "Sara" } ]
     /// ]]&gt;&lt;/h-embedded-data&gt;
     /// &lt;li&gt;{{name}}&lt;/li&gt;
     /// </code>

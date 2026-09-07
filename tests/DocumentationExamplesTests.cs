@@ -85,9 +85,9 @@ public class DocumentationExamplesTests : IDisposable
     public void Example1_FillingInValues()
     {
         var output = "Hello {{name}}, you have {{count}} new messages."
-            .RenderContent(new { name = "Ali", count = 3 });
+            .RenderContent(new { name = "John", count = 3 });
 
-        Assert.Equal("Hello Ali, you have 3 new messages.", output);
+        Assert.Equal("Hello John, you have 3 new messages.", output);
     }
 
     // ---------------------------------------------------------------- Example 2
@@ -96,9 +96,9 @@ public class DocumentationExamplesTests : IDisposable
     {
         var path = Write("greeting.txt", "Hello {{name}}, welcome back.");
 
-        var output = new Uri(path).RenderContent(new { name = "Ali" });
+        var output = new Uri(path).RenderContent(new { name = "John" });
 
-        Assert.Equal("Hello Ali, welcome back.", output);
+        Assert.Equal("Hello John, welcome back.", output);
     }
 
     // ---------------------------------------------------------------- Example 3
@@ -298,7 +298,7 @@ public class DocumentationExamplesTests : IDisposable
             "HEADER<h-embedded-data><![CDATA[select name from products]]></h-embedded-data>"
             + "[{{name}}]FOOTER";
 
-        Assert.Equal("HEADER[Ali]FOOTER", template.RenderContent(new { name = "Ali" }));
+        Assert.Equal("HEADER[John]FOOTER", template.RenderContent(new { name = "John" }));
     }
 
     [Fact]
@@ -318,9 +318,9 @@ public class DocumentationExamplesTests : IDisposable
     {
         // the provider is only invoked when a data tag exists, so strict mode costs nothing
         // for templates that genuinely have no query
-        var output = "Hello {{name}}.".RenderContent(new { name = "Ali" }, new TemplateOptions { ThrowIfQueryPresent = true });
+        var output = "Hello {{name}}.".RenderContent(new { name = "John" }, new TemplateOptions { ThrowIfQueryPresent = true });
 
-        Assert.Equal("Hello Ali.", output);
+        Assert.Equal("Hello John.", output);
     }
 
     [Fact]
@@ -422,7 +422,7 @@ public class DocumentationExamplesTests : IDisposable
         var index = Write("index.html",
             "A<h-embedded-template><![CDATA[sub/part.html]]></h-embedded-template>B");
 
-        Assert.Equal("A[part Ali]B", new Uri(index).RenderContent(new { name = "Ali" }));
+        Assert.Equal("A[part John]B", new Uri(index).RenderContent(new { name = "John" }));
     }
 
     [Fact]
@@ -534,10 +534,10 @@ public class DocumentationExamplesTests : IDisposable
         // or one fetched from a REST API via src="https://..."
         var template =
             "<h-embedded-data content-type=\"json\"><![CDATA["
-            + "[ {\"name\":\"Ali\",\"city\":\"Amman\"}, {\"name\":\"Sara\",\"city\":\"Dubai\"} ]"
+            + "[ {\"name\":\"John\",\"city\":\"Amman\"}, {\"name\":\"Sara\",\"city\":\"Dubai\"} ]"
             + "]]></h-embedded-data><li>{{name}} ({{city}})</li>";
 
-        Assert.Equal("<li>Ali (Amman)</li><li>Sara (Dubai)</li>",
+        Assert.Equal("<li>John (Amman)</li><li>Sara (Dubai)</li>",
             template.RenderContent(new { }));
     }
 

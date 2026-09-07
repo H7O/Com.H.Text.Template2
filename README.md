@@ -11,9 +11,9 @@ already know how to express it.
 using Com.H.Text.Template2;
 
 var output = "Hello {{name}}, you have {{count}} new messages."
-    .RenderContent(new { name = "Ali", count = 3 });
+    .RenderContent(new { name = "John", count = 3 });
 
-// Hello Ali, you have 3 new messages.
+// Hello John, you have 3 new messages.
 ```
 
 Add a query and the template repeats once per row:
@@ -526,7 +526,7 @@ dotnet test
 ## How this relates to Com.H
 
 The `2` marks the generation. `Com.H.Text.Template` (a namespace inside the `Com.H` package) is
-the original 2016 engine — still supported, still used by deployed applications. **This package is
+the original engine — still supported. **This package is
 the current one**, with its own engine; it no longer depends on `Com.H` at all. Starting
 something new? Take the highest-numbered `Com.H.Text.Template*` package.
 

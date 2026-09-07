@@ -11,7 +11,7 @@ namespace Com.H.Text.Template2.Tests;
 /// The original engine did not do this for the template body: it filled markers model-by-model
 /// with a global string replace, so the first model consulted overwrote every marker it lacked
 /// with its own null text, hiding all outer values. Verified against Com.H 10.2.0 — rendering
-/// "name={{name}} url={{details_url}}" with [outer, row] produced "name=Ali url=", losing the
+/// "name={{name}} url={{details_url}}" with [outer, row] produced "name=John url=", losing the
 /// caller's URL entirely. These tests pin the corrected behaviour.
 /// </remarks>
 public class ModelChainTests : IDisposable
@@ -25,7 +25,7 @@ public class ModelChainTests : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = """
             create table customers (id integer, name text, company text);
-            insert into customers values (7, 'Ali', 'Acme Holdings');
+            insert into customers values (7, 'John', 'Acme Holdings');
             insert into customers values (8, 'Sara', null);
             """;
         cmd.ExecuteNonQuery();
@@ -46,7 +46,7 @@ public class ModelChainTests : IDisposable
         var output = Template.RenderContent(
             _conn, new { customer_id = 7, details_url = "https://shop.example/customers/7" });
 
-        Assert.Equal("<b>Ali</b><a href=\"https://shop.example/customers/7\">Details</a>", output);
+        Assert.Equal("<b>John</b><a href=\"https://shop.example/customers/7\">Details</a>", output);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class ModelChainTests : IDisposable
             _conn,
             new { customer_id = 7, details_url = "u", name = "SHOULD-NOT-WIN" });
 
-        Assert.Contains("<b>Ali</b>", output);
+        Assert.Contains("<b>John</b>", output);
         Assert.DoesNotContain("SHOULD-NOT-WIN", output);
     }
 
@@ -92,7 +92,7 @@ public class ModelChainTests : IDisposable
             + "select name from customers where id = {{customer_id}}"
             + "]]></h-embedded-data>[{v1{name}}|{{details_url}}]";
 
-        Assert.Equal("[Ali|https://shop.example/customers/7]",
+        Assert.Equal("[John|https://shop.example/customers/7]",
             template.RenderContent(_conn, new { customer_id = 7, details_url = "https://shop.example/customers/7" }));
     }
 
@@ -152,10 +152,10 @@ public class ModelChainTests : IDisposable
     {
         var template =
             "<h-embedded-data content-type=\"json\"><![CDATA["
-            + "[{\"name\":\"Ali\",\"email\":null}]"
+            + "[{\"name\":\"John\",\"email\":null}]"
             + "]]></h-embedded-data>[{{name}}:{{email}}]";
 
-        Assert.Equal("[Ali:]", template.RenderContent(new { }, Strict));
+        Assert.Equal("[John:]", template.RenderContent(new { }, Strict));
     }
 
     [Fact]

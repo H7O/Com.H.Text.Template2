@@ -118,14 +118,14 @@ public class ProviderCompositionTests : IDisposable
         var options = new TemplateOptions
         {
             ContentResolver = (uri, attrs, ct) =>
-                new ValueTask<string?>("""[ {"name":"Ali"}, {"name":"Sara"} ]""")
+                new ValueTask<string?>("""[ {"name":"John"}, {"name":"Sara"} ]""")
         };
 
         var template =
             "<h-embedded-data content-type=\"json\" src=\"https://api.example/users\">"
             + "</h-embedded-data>[{{name}}]";
 
-        Assert.Equal("[Ali][Sara]", template.RenderContent(new { }, options));
+        Assert.Equal("[John][Sara]", template.RenderContent(new { }, options));
     }
 
     // ---------------------------------------------------------------- content resolver

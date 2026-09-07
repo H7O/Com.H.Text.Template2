@@ -219,7 +219,7 @@ namespace Com.H.Text.Template2
         /// </remarks>
         /// <example>
         /// <code>
-        /// var text = "Hello {{name}}.".RenderContent(new { name = "Ali" });
+        /// var text = "Hello {{name}}.".RenderContent(new { name = "John" });
         /// </code>
         /// </example>
         public static string? RenderContent(
